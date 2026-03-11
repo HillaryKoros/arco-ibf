@@ -102,6 +102,7 @@ services:
       POSTGRES_USER: e4drr
       POSTGRES_PASS: ${DB_PASSWORD:-e4drr_dev}
       TIPG_DB_SCHEMAS: '["public"]'
+      ROOT_PATH: /geo
     depends_on:
       db:
         condition: service_healthy

@@ -5,6 +5,7 @@ Includes TiPG's OGC Features + Tiles router plus custom domain endpoints
 for calendar aggregation, choropleth data, and bounding box lookups.
 """
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Query
@@ -53,6 +54,7 @@ app = FastAPI(
     description="OGC Features/Tiles (TiPG) + custom hazard endpoints",
     version="0.1.0",
     lifespan=lifespan,
+    root_path=os.environ.get("ROOT_PATH", ""),
 )
 
 app.add_middleware(

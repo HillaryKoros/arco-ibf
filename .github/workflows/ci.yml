@@ -164,15 +164,21 @@ jobs:
     environment: staging
 
     steps:
+      - name: Set image prefix (lowercase)
+        run: echo "IMAGE_PREFIX=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.STAGING_HOST }}
           username: ${{ secrets.STAGING_USER }}
           key: ${{ secrets.STAGING_SSH_KEY }}
+          command_timeout: 20m
           script: |
             set -e
             APP_DIR=~/crma
+            REGISTRY=ghcr.io
+            PREFIX=${{ env.IMAGE_PREFIX }}
 
             # Clone or pull
             if [ ! -d "$APP_DIR" ]; then
@@ -188,11 +194,22 @@ jobs:
               cp .env.example .env
             fi
 
-            # Build and start
-            docker compose up -d --build --remove-orphans
+            # Pull pre-built images from GHCR (built by CI, no local build needed)
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker pull ${REGISTRY}/${PREFIX}/crma-cms:latest || true
+            docker pull ${REGISTRY}/${PREFIX}/crma-geoapi:latest || true
+            docker pull ${REGISTRY}/${PREFIX}/crma-frontend:latest || true
 
-            # Wait and verify
-            sleep 15
+            # Tag pulled images so docker compose uses them
+            docker tag ${REGISTRY}/${PREFIX}/crma-cms:latest crma-cms:latest 2>/dev/null || true
+            docker tag ${REGISTRY}/${PREFIX}/crma-geoapi:latest crma-geoapi:latest 2>/dev/null || true
+            docker tag ${REGISTRY}/${PREFIX}/crma-frontend:latest crma-frontend:latest 2>/dev/null || true
+
+            # Start services (--build as fallback if pull failed)
+            docker compose up -d --remove-orphans
+
+            # Verify
+            sleep 10
             docker compose ps
             curl -sf http://localhost:9080/nginx-health || echo "WARNING: nginx health check failed"
             echo "=== CRMA staging deploy complete ==="

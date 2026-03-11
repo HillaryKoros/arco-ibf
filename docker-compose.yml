@@ -64,6 +64,7 @@ services:
   # Django/Wagtail for content management: storyline pages, hazard narratives,
   # media uploads. Exposes REST API at /api/v2/ for the frontend.
   cms:
+    image: crma-cms:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -88,6 +89,7 @@ services:
   #   - OGC endpoints (TiPG):  /collections/* — vector tiles + features
   #   - Custom endpoints:      /api/*         — calendar, choropleth, bbox, events
   geoapi:
+    image: crma-geoapi:latest
     build:
       context: ./geoapi
       dockerfile: Dockerfile
@@ -122,6 +124,7 @@ services:
   # SSR dashboard: CRMA compare maps, calendar heatmaps, storylines.
   # Next.js rewrites proxy to backend services (used in dev; nginx handles in prod).
   frontend:
+    image: crma-frontend:latest
     build:
       context: ./frontend
       dockerfile: Dockerfile

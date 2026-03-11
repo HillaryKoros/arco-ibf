@@ -133,7 +133,7 @@ services:
     environment:
       CMS_API_URL: http://cms:8000
       GEO_API_URL: http://geoapi:8080
-      TITILER_API_URL: http://titiler:8080
+      TITILER_API_URL: http://titiler:80
     depends_on:
       - cms
       - geoapi

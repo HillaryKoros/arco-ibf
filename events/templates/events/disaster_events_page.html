@@ -1,0 +1,566 @@
+{% extends "base.html" %}
+{% load static wagtailcore_tags %}
+
+{% block nav_events_active %}is-active has-text-warning{% endblock %}
+
+{% block extra_css %}
+<style>
+    .hazard-toggle .button.is-active { background-color: #3273dc; color: #fff; }
+    .card { border-radius: 1rem; box-shadow: 0 10px 30px rgba(0,0,0,0.07); }
+    .calendar-cell { cursor: pointer; stroke: rgba(0,0,0,0.05); }
+    .calendar-cell:hover { stroke: #333; stroke-width: 1.5; }
+    .calendar-cell--active { stroke: #3273dc; stroke-width: 2; }
+    .cell-count { fill: #2a2a2a; font-size: 0.75rem; font-weight: 600; }
+    .month-label, .year-label { font-size: 0.75rem; fill: #555; }
+    .adm-path { stroke: #fff; stroke-width: 0.5; }
+    .graticule { fill: none; stroke: rgba(0,0,0,0.05); }
+    .storyline-panel { max-height: 400px; overflow-y: auto; }
+    .eyebrow { text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.75rem; color: #666; margin-bottom: 0.5rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="mb-5">
+    <p class="eyebrow">Disaster Events Pipeline</p>
+    <h1 class="title is-2">{{ page.title }}</h1>
+    <p class="subtitle is-5">{{ page.subtitle }}</p>
+</div>
+
+<!-- Hazard Toggle -->
+<div class="hazard-toggle buttons mb-4" id="hazardToggle">
+    <button class="button is-medium is-active" data-hazard="drought">
+        <span class="icon"><i class="fas fa-sun"></i></span>
+        <span>Drought</span>
+    </button>
+    <button class="button is-medium" data-hazard="flood">
+        <span class="icon"><i class="fas fa-water"></i></span>
+        <span>Flood</span>
+    </button>
+</div>
+
+<div class="columns">
+    <!-- Calendar Heatmap -->
+    <div class="column is-6">
+        <div class="card">
+            <div class="card-content">
+                <div class="level">
+                    <div class="level-left">
+                        <div>
+                            <p class="eyebrow">EM-DAT <span id="hazardLabel">Drought</span> Activity</p>
+                            <h3 class="title is-5">Monthly Event Frequency</h3>
+                        </div>
+                    </div>
+                    <div class="level-right">
+                        <span class="tag is-warning is-light" id="calendarLoading" style="display:none;">Loading</span>
+                    </div>
+                </div>
+                <div id="calendarContainer">
+                    <svg id="calendarSvg" role="img" aria-label="Disaster calendar heatmap"></svg>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Admin2 Choropleth Map -->
+    <div class="column is-6">
+        <div class="card">
+            <div class="card-content">
+                <div class="level">
+                    <div class="level-left">
+                        <div>
+                            <p class="eyebrow">Affected Regions</p>
+                            <h3 class="title is-5">Admin2 Frequency Choropleth</h3>
+                        </div>
+                    </div>
+                    <div class="level-right">
+                        <span class="tag is-warning is-light" id="mapLoading" style="display:none;">Loading</span>
+                    </div>
+                </div>
+                <div id="mapContainer" style="height:420px; width:100%;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Storyline Panel (appears when event selected) -->
+<div class="columns mt-3" id="storylineSection" style="display:none;">
+    <div class="column is-12">
+        <div class="card">
+            <div class="card-content">
+                <div class="level">
+                    <div class="level-left">
+                        <div>
+                            <p class="eyebrow">Event Storyline</p>
+                            <h3 class="title is-5" id="storylineTitle">Select a calendar cell</h3>
+                        </div>
+                    </div>
+                    <div class="level-right">
+                        <span class="tag is-warning is-light" id="storylineLoading" style="display:none;">Loading</span>
+                    </div>
+                </div>
+                <div class="storyline-panel content" id="storylineContent">
+                    <p class="has-text-grey">Choose an event to load its contextual storyline.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function() {
+    // ── Config from Wagtail CMS ──
+    const CONFIG = {
+        defaultHazard: '{{ page.default_hazard }}',
+        startYear: {{ page.calendar_start_year }},
+        endYear: {{ page.calendar_end_year }},
+        topojsonUrl: '{{ page.topojson_url }}',
+        emdatApiBase: '/api/proxy/emdat/',
+    };
+
+    let currentHazard = CONFIG.defaultHazard;
+    let selectedEventKey = null;
+    let calendarData = [];
+    let topology = null;
+    let cachedGeojson = null;
+    let lastRegions = [];
+
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+    const colorScale = d3.scaleThreshold()
+        .domain([1, 2, 4, 6, 8, 10])
+        .range(['#e8e8e8','#ffffcc','#fed976','#ffb24b','#fd4e2a','#e3181a','#800026']);
+
+    // ── Hazard Toggle ──
+    document.querySelectorAll('#hazardToggle .button').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('#hazardToggle .button').forEach(b => b.classList.remove('is-active'));
+            this.classList.add('is-active');
+            currentHazard = this.dataset.hazard;
+            document.getElementById('hazardLabel').textContent =
+                currentHazard === 'drought' ? 'Drought' : 'Flood';
+            selectedEventKey = null;
+            document.getElementById('storylineSection').style.display = 'none';
+            fetchCalendarData();
+        });
+    });
+
+    // ── Fetch EM-DAT Calendar Data ──
+    async function fetchCalendarData() {
+        const loading = document.getElementById('calendarLoading');
+        loading.style.display = '';
+        try {
+            const resp = await fetch(`${CONFIG.emdatApiBase}emdat-monthly-risk?type=${currentHazard}`);
+            const json = await resp.json();
+            calendarData = json.data || [];
+            if (calendarData.length === 0) throw new Error('Empty data');
+        } catch(e) {
+            console.warn('Using mock data', e);
+            calendarData = generateMockData();
+        }
+        loading.style.display = 'none';
+        if (calendarData.length > 0) {
+            selectedEventKey = calendarData[0].event_key;
+        }
+        renderCalendar();
+        fetchRegions();
+    }
+
+    function generateMockData() {
+        const data = [];
+        for (let year = CONFIG.startYear; year <= CONFIG.endYear; year++) {
+            for (let month = 1; month <= 12; month++) {
+                const count = Math.floor(Math.random() * 12);
+                if (count > 0) {
+                    data.push({
+                        year, month, event_count: count,
+                        event_key: `${currentHazard}-${year}-${month}`,
+                        total_deaths: 0, total_affected: 0,
+                        regions_affected: 0, countries_affected: 0, level: 0,
+                    });
+                }
+            }
+        }
+        return data;
+    }
+
+    // ── Render D3 Calendar ──
+    function renderCalendar() {
+        const container = document.getElementById('calendarContainer');
+        const svg = d3.select('#calendarSvg');
+        svg.selectAll('*').remove();
+
+        const width = container.clientWidth;
+        const grouped = new Map();
+        calendarData.forEach(item => {
+            const key = `${item.year}-${String(item.month).padStart(2,'0')}`;
+            const list = grouped.get(key) || [];
+            list.push(item);
+            grouped.set(key, list);
+        });
+
+        const years = [];
+        for (let y = CONFIG.startYear; y <= CONFIG.endYear; y++) years.push(y);
+
+        const pad = { top: 32, right: 16, bottom: 16, left: 50 };
+        const cellW = Math.max(36, (width - pad.left - pad.right) / years.length);
+        const cellH = 28;
+        const height = pad.top + pad.bottom + cellH * 12;
+        svg.attr('width', width).attr('height', height);
+
+        const g = svg.append('g').attr('transform', `translate(${pad.left},${pad.top})`);
+
+        // Month labels
+        g.selectAll('text.month').data(months).enter().append('text')
+            .attr('class','month-label').attr('x',-8)
+            .attr('y',(_,i) => i*cellH + cellH/1.5)
+            .attr('text-anchor','end').text(d=>d);
+
+        // Year labels
+        g.selectAll('text.year').data(years).enter().append('text')
+            .attr('class','year-label')
+            .attr('x',(_,i) => i*cellW + cellW/2).attr('y',-8)
+            .attr('text-anchor','middle').text(d=>d);
+
+        // Cells
+        const cells = g.append('g').selectAll('g.cell')
+            .data(months.flatMap((_,row) => years.map((year,col) => ({
+                key: `${year}-${String(row+1).padStart(2,'0')}`, row, col
+            }))))
+            .enter().append('g')
+            .attr('transform', d => `translate(${d.col*cellW},${d.row*cellH})`);
+
+        cells.append('rect')
+            .attr('width', cellW-4).attr('height', cellH-6)
+            .attr('rx',4).attr('ry',4).attr('class','calendar-cell')
+            .attr('fill', d => {
+                const bucket = grouped.get(d.key);
+                if (!bucket || !bucket.length) return '#f5f5f5';
+                const peak = bucket.reduce((a,c) => Math.max(a,c.event_count),0);
+                return colorScale(peak);
+            })
+            .classed('calendar-cell--active', d => {
+                const bucket = grouped.get(d.key) || [];
+                return bucket.some(item => item.event_key === selectedEventKey);
+            })
+            .on('click', (event, d) => {
+                const bucket = grouped.get(d.key);
+                if (!bucket || !bucket.length) { selectedEventKey = null; return; }
+                const sorted = [...bucket].sort((a,b) => b.event_count - a.event_count);
+                selectedEventKey = sorted[0].event_key;
+                renderCalendar();
+                fetchRegions();
+                fetchStoryline();
+            });
+
+        cells.append('text')
+            .attr('x',4).attr('y',cellH/2).attr('class','cell-count')
+            .text(d => {
+                const bucket = grouped.get(d.key) || [];
+                if (!bucket.length) return '';
+                return bucket.reduce((a,c) => a + c.event_count, 0);
+            });
+    }
+
+    // ── MapLibre GL Map ──
+    let map = null;
+    let mapReady = false;
+    let hoveredId = null;
+    const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: false });
+
+    function initMap() {
+        map = new maplibregl.Map({
+            container: 'mapContainer',
+            style: {
+                version: 8,
+                name: 'OSM',
+                sources: {
+                    osm: {
+                        type: 'raster',
+                        tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+                        tileSize: 256,
+                        attribution: '&copy; OpenStreetMap contributors',
+                    },
+                    satellite: {
+                        type: 'raster',
+                        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+                        tileSize: 256,
+                        attribution: '&copy; Esri, Maxar, Earthstar Geographics',
+                    },
+                },
+                layers: [
+                    { id: 'osm-tiles', type: 'raster', source: 'osm', minzoom: 0, maxzoom: 19 },
+                    { id: 'satellite-tiles', type: 'raster', source: 'satellite', minzoom: 0, maxzoom: 19, layout: { visibility: 'none' } },
+                ],
+            },
+            center: [38, 2.5],
+            zoom: 3.5,
+        });
+
+        map.addControl(new maplibregl.NavigationControl(), 'top-left');
+
+        // Basemap switcher control
+        class BasemapControl {
+            onAdd(m) {
+                this._map = m;
+                this._container = document.createElement('div');
+                this._container.className = 'maplibregl-ctrl maplibregl-ctrl-group';
+                this._container.innerHTML = `
+                    <button title="OSM" data-layer="osm" class="basemap-btn active" style="padding:4px 8px;font-size:11px;cursor:pointer;">OSM</button>
+                    <button title="Satellite" data-layer="satellite" class="basemap-btn" style="padding:4px 8px;font-size:11px;cursor:pointer;">Sat</button>
+                `;
+                this._container.querySelectorAll('.basemap-btn').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const layer = btn.dataset.layer;
+                        m.setLayoutProperty('osm-tiles', 'visibility', layer === 'osm' ? 'visible' : 'none');
+                        m.setLayoutProperty('satellite-tiles', 'visibility', layer === 'satellite' ? 'visible' : 'none');
+                        this._container.querySelectorAll('.basemap-btn').forEach(b => b.classList.remove('active'));
+                        btn.classList.add('active');
+                    });
+                });
+                return this._container;
+            }
+            onRemove() { this._container.remove(); }
+        }
+        map.addControl(new BasemapControl(), 'top-right');
+
+        map.on('load', async () => {
+            mapReady = true;
+            console.log('MapLibre loaded');
+            await loadTopology();
+            addChoroplethLayers();
+            renderChoropleth(lastRegions);
+            // Now fetch calendar data (which triggers fetchRegions → renderChoropleth)
+            fetchCalendarData();
+        });
+    }
+
+    async function loadTopology() {
+        if (topology) return topology;
+        try {
+            const resp = await fetch(CONFIG.topojsonUrl);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            topology = await resp.json();
+            const objKey = Object.keys(topology.objects)[0];
+            cachedGeojson = topojson.feature(topology, topology.objects[objKey]);
+            console.log('TopoJSON loaded:', cachedGeojson.features.length, 'features');
+            cachedGeojson.features.forEach((f, i) => {
+                f.id = i;
+                f.properties._intensity = 0;
+            });
+        } catch(e) {
+            console.error('Failed to load topojson:', e);
+        }
+        return topology;
+    }
+
+    function addChoroplethLayers() {
+        if (!map || !mapReady || !cachedGeojson) return;
+        if (map.getSource('admin2')) return;
+
+        map.addSource('admin2', {
+            type: 'geojson',
+            data: cachedGeojson,
+            promoteId: 'shapeID',
+        });
+
+        map.addLayer({
+            id: 'admin2-fill',
+            type: 'fill',
+            source: 'admin2',
+            paint: {
+                'fill-color': [
+                    'step', ['get', '_intensity'],
+                    '#f0f0e8',   // 0: no events (base)
+                    1, '#ffffcc',
+                    2, '#fed976',
+                    4, '#ffb24b',
+                    6, '#fd4e2a',
+                    8, '#e3181a',
+                    10, '#800026',
+                ],
+                'fill-opacity': ['case',
+                    ['>', ['get', '_intensity'], 0], 0.75,
+                    0.4
+                ],
+            },
+        });
+
+        map.addLayer({
+            id: 'admin2-border',
+            type: 'line',
+            source: 'admin2',
+            paint: {
+                'line-color': ['case',
+                    ['boolean', ['feature-state', 'hover'], false], '#333',
+                    '#666'
+                ],
+                'line-width': ['case',
+                    ['boolean', ['feature-state', 'hover'], false], 2,
+                    0.5
+                ],
+            },
+        });
+
+        // Hover interactions
+        map.on('mousemove', 'admin2-fill', (e) => {
+            if (e.features.length > 0) {
+                if (hoveredId !== null) {
+                    map.setFeatureState({ source: 'admin2', id: hoveredId }, { hover: false });
+                }
+                hoveredId = e.features[0].properties.shapeID;
+                map.setFeatureState({ source: 'admin2', id: hoveredId }, { hover: true });
+                map.getCanvas().style.cursor = 'pointer';
+
+                const props = e.features[0].properties;
+                const val = props._intensity || 0;
+                const html = val > 0
+                    ? `<b>${props.shapeName}</b> (${props.shapeGroup})<br>${val} events`
+                    : `<b>${props.shapeName}</b> (${props.shapeGroup})`;
+                popup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+            }
+        });
+
+        map.on('mouseleave', 'admin2-fill', () => {
+            if (hoveredId !== null) {
+                map.setFeatureState({ source: 'admin2', id: hoveredId }, { hover: false });
+            }
+            hoveredId = null;
+            map.getCanvas().style.cursor = '';
+            popup.remove();
+        });
+    }
+
+    async function fetchRegions() {
+        if (!selectedEventKey) return;
+        const loading = document.getElementById('mapLoading');
+        loading.style.display = '';
+
+        await loadTopology();
+        if (!cachedGeojson) { loading.style.display = 'none'; return; }
+
+        let regions = [];
+        try {
+            const resp = await fetch(`${CONFIG.emdatApiBase}emdat-month-regions/${selectedEventKey}`);
+            const json = await resp.json();
+            regions = json.regions || [];
+        } catch(e) {
+            console.warn('Region fetch failed, using fallback', e);
+            regions = [
+                {shapeID:'KEN-ADM2-3_0_0-B1',shapeName:'BARINGO',shapeGroup:'KEN',frequency:5},
+                {shapeID:'KEN-ADM2-3_0_0-B2',shapeName:'BOMET',shapeGroup:'KEN',frequency:3},
+                {shapeID:'ETH-ADM2-3_0_0-B1',shapeName:'Afder',shapeGroup:'ETH',frequency:7},
+                {shapeID:'ETH-ADM2-3_0_0-B3',shapeName:'Alaba',shapeGroup:'ETH',frequency:4},
+                {shapeID:'SOM-ADM2-3_0_0-B1',shapeName:'Balcad',shapeGroup:'SOM',frequency:8},
+                {shapeID:'SOM-ADM2-3_0_0-B3',shapeName:'Ceel Afweyn',shapeGroup:'SOM',frequency:6},
+                {shapeID:'UGA-ADM2-3_0_0-B1',shapeName:'ABIM',shapeGroup:'UGA',frequency:3},
+                {shapeID:'SSD-ADM2-3_0_0-B1',shapeName:'Morobo',shapeGroup:'SSD',frequency:5},
+                {shapeID:'TZA-ADM2-3_0_0-B1',shapeName:'Bagamoyo',shapeGroup:'TZA',frequency:4},
+                {shapeID:'SDN-ADM2-3_0_0-B1',shapeName:'Jabal Aulia',shapeGroup:'SDN',frequency:6},
+            ];
+        }
+        loading.style.display = 'none';
+        lastRegions = regions;
+        renderChoropleth(regions);
+    }
+
+    function renderChoropleth(regions) {
+        if (!map || !mapReady || !cachedGeojson) return;
+        if (!map.getSource('admin2')) return;
+
+        const intensityById = new Map();
+        regions.forEach(r => intensityById.set(r.shapeID, r.frequency));
+
+        // Set _intensity on each feature so the step expression can read it
+        cachedGeojson.features.forEach(f => {
+            f.properties._intensity = intensityById.get(f.properties.shapeID) || 0;
+        });
+
+        // Push updated GeoJSON to the source
+        map.getSource('admin2').setData(JSON.parse(JSON.stringify(cachedGeojson)));
+
+        console.log('renderChoropleth:', cachedGeojson.features.length, 'features,', regions.length, 'highlighted');
+    }
+
+    // ── Fetch Storyline (rendered as Markdown -> HTML) ──
+    async function fetchStoryline() {
+        if (!selectedEventKey) return;
+        const section = document.getElementById('storylineSection');
+        const title = document.getElementById('storylineTitle');
+        const content = document.getElementById('storylineContent');
+        const loading = document.getElementById('storylineLoading');
+
+        section.style.display = '';
+        loading.style.display = '';
+        title.textContent = `${selectedEventKey} — ${currentHazard} context`;
+
+        let rendered = false;
+
+        // 1. Try Cloud Run API markdown
+        try {
+            const resp = await fetch(`${CONFIG.emdatApiBase}emdat-event-markdown/${selectedEventKey}`);
+            const json = await resp.json();
+            if (json.markdown) {
+                content.innerHTML = marked.parse(json.markdown);
+                rendered = true;
+            }
+        } catch(e) {
+            console.warn('Cloud Run markdown unavailable', e);
+        }
+
+        // 2. Try Wagtail CMS storyline entries
+        if (!rendered) {
+            try {
+                const resp = await fetch(`/api/v2/storylines/?event_key=${selectedEventKey}&format=json`);
+                const json = await resp.json();
+                if (json.items && json.items.length > 0) {
+                    content.innerHTML = json.items[0].body;
+                    rendered = true;
+                }
+            } catch(e2) {
+                console.warn('Wagtail storyline unavailable', e2);
+            }
+        }
+
+        // 3. Fallback message
+        if (!rendered) {
+            content.innerHTML = `
+                <div class="notification is-info is-light">
+                    <p><strong>No storyline authored yet for this event.</strong></p>
+                    <p>You can create one in the <a href="/admin/">Wagtail admin</a> as a child of the Disaster Events page,
+                    or provide MDX/Markdown content files.</p>
+                </div>`;
+        }
+
+        loading.style.display = 'none';
+    }
+
+    // ── Navbar burger toggle (mobile) ──
+    document.querySelectorAll('.navbar-burger').forEach(el => {
+        el.addEventListener('click', () => {
+            const target = document.getElementById(el.dataset.target);
+            el.classList.toggle('is-active');
+            target.classList.toggle('is-active');
+        });
+    });
+
+    // ── Init ──
+    // Set active hazard button from CMS config
+    document.querySelectorAll('#hazardToggle .button').forEach(b => {
+        b.classList.toggle('is-active', b.dataset.hazard === CONFIG.defaultHazard);
+    });
+    document.getElementById('hazardLabel').textContent =
+        CONFIG.defaultHazard === 'drought' ? 'Drought' : 'Flood';
+
+    // Init MapLibre GL map (data fetch happens on map load)
+    initMap();
+
+    // Responsive resize — re-render calendar, MapLibre handles map resize
+    window.addEventListener('resize', () => {
+        renderCalendar();
+        if (map) map.resize();
+    });
+})();
+</script>
+{% endblock %}

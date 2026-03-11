@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import "maplibre-gl/dist/maplibre-gl.css";
+
+:root {
+  --color-icpac-green: #00833e;
+  --color-icpac-gold: #c49a2a;
+}
+
+body {
+  @apply bg-gray-50 text-gray-900 antialiased;
+}
+
+/* Calendar heatmap */
+.calendar-cell {
+  cursor: pointer;
+  transition: stroke-width 0.15s;
+}
+.calendar-cell:hover {
+  stroke: #333;
+  stroke-width: 1.5;
+}
+
+/* MapLibre overrides */
+.maplibregl-popup-content {
+  @apply rounded-lg shadow-lg text-sm px-3 py-2;
+}

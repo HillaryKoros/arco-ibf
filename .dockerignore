@@ -1,0 +1,38 @@
+# Django project
+/media/
+/static/
+*.sqlite3
+db.sqlite3
+
+# Python
+__pycache__
+*.pyc
+.Python
+env/
+venv/
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Frontend (has its own Dockerfile)
+frontend/node_modules
+frontend/.next
+frontend/out
+
+# Git & IDE
+.git
+.gitignore
+.vscode
+.idea/
+*.md
+
+# Docker
+pgdata/
+
+# Misc
+.DS_Store
+*.swp
+coverage
+.env
+.env.example

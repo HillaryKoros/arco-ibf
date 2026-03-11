@@ -1,0 +1,19 @@
+import type { Metadata } from "next";
+import "@/styles/globals.css";
+import { Navbar } from "@/components/ui/navbar";
+
+export const metadata: Metadata = {
+  title: "CRMA — Continuous Risk Monitoring & Assessment",
+  description: "Flood & Drought Early Warning Pipeline — ICPAC / IGAD",
+};
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>
+        <Navbar />
+        <main className="pt-14">{children}</main>
+      </body>
+    </html>
+  );
+}

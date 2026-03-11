@@ -1,0 +1,138 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# E4DRR — Disaster Events CMS  |  Docker Compose Stack
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# 5 services:
+#   db       — PostGIS database (shared by CMS + GeoAPI)
+#   cms      — Django/Wagtail CMS (content management + REST API)
+#   geoapi   — FastAPI + TiPG (OGC vector tiles, features, custom geo endpoints)
+#   titiler  — Titiler (COG raster tile server — placeholder, integrate later)
+#   frontend — Next.js (SSR dashboard, proxies all backend APIs)
+#
+# Quick start:
+#   cp .env.example .env
+#   docker compose up -d
+#   open http://localhost:9204
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ── 1. PostGIS Database ─────────────────────────────────────────────────────
+  # Shared by CMS (Django ORM) and GeoAPI (TiPG + asyncpg).
+  # On first start: runs db-init/ scripts to create tables, load GADM
+  # admin boundaries (admin0/1/2), and seed EM-DAT disaster events.
+  db:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: e4drr
+      POSTGRES_USER: e4drr
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-e4drr_dev}
+    ports:
+      - "9200:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db-init:/docker-entrypoint-initdb.d:z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e4drr"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── 2. Wagtail CMS ─────────────────────────────────────────────────────────
+  # Django/Wagtail for content management: storyline pages, hazard narratives,
+  # media uploads. Exposes REST API at /api/v2/ for the frontend to consume.
+  # Runs migrations on startup, serves via Gunicorn.
+  cms:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "9201:8000"
+    environment:
+      DB_ENGINE: django.contrib.gis.db.backends.postgis
+      DB_NAME: e4drr
+      DB_USER: e4drr
+      DB_PASSWORD: ${DB_PASSWORD:-e4drr_dev}
+      DB_HOST: db
+      DB_PORT: "5432"
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-disasterevents_cms.settings.dev}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - media:/app/media
+
+  # ── 3. GeoAPI (FastAPI + TiPG) ─────────────────────────────────────────────
+  # Custom FastAPI wrapper embedding TiPG's OGC router.
+  # Two layers:
+  #   - OGC endpoints (TiPG):  /collections/* — vector tiles + features
+  #   - Custom endpoints:      /api/*         — calendar, choropleth, bbox, events
+  #
+  # TiPG auto-discovers all PostGIS tables, views, and SQL functions.
+  # Admin boundaries served as vector tiles (MVT) for MapLibre rendering.
+  geoapi:
+    build:
+      context: ./geoapi
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "9202:8080"
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DBNAME: e4drr
+      POSTGRES_USER: e4drr
+      POSTGRES_PASS: ${DB_PASSWORD:-e4drr_dev}
+      TIPG_DB_SCHEMAS: '["public"]'
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── 4. Titiler (Raster Tile Server) ────────────────────────────────────────
+  # Serves Cloud-Optimized GeoTIFFs (COGs) as dynamic raster tiles.
+  # Used for satellite imagery overlays, climate model outputs, etc.
+  # Currently standalone — will merge into geoapi later.
+  titiler:
+    image: ghcr.io/developmentseed/titiler:latest
+    restart: unless-stopped
+    ports:
+      - "9203:8080"
+    environment:
+      TITILER_API_CORS_ORIGINS: '["*"]'
+
+  # ── 5. Next.js Frontend ────────────────────────────────────────────────────
+  # SSR dashboard with:
+  #   - CRMA compare maps (admin0 choropleth — drought vs flood)
+  #   - Individual hazard view (admin1 choropleth + calendar heatmap)
+  #   - Scroll-driven storyline panels
+  #
+  # Proxies all backend APIs via Next.js rewrites:
+  #   /api/*  → cms:8000     (Wagtail REST API)
+  #   /geo/*  → geoapi:8080  (OGC + custom geo endpoints)
+  #   /cog/*  → titiler:8080 (raster tiles)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "9204:3000"
+    environment:
+      CMS_API_URL: http://cms:8000
+      GEO_API_URL: http://geoapi:8080
+      TITILER_API_URL: http://titiler:8080
+    depends_on:
+      - cms
+      - geoapi
+
+volumes:
+  pgdata:
+  media:

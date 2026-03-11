@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% load wagtailcore_tags %}
+
+{% block nav_monitoring_active %}is-active has-text-warning{% endblock %}
+
+{% block content %}
+<div class="mb-5">
+    <p class="eyebrow" style="text-transform:uppercase;letter-spacing:0.08em;font-size:0.75rem;color:#666;">Risk Monitoring</p>
+    <h1 class="title is-2">{{ page.title }}</h1>
+    <p class="subtitle is-5">{{ page.subtitle }}</p>
+</div>
+
+<!-- Hazard Toggle -->
+<div class="buttons mb-4" id="hazardToggle">
+    <button class="button is-medium is-active" data-hazard="drought">
+        <span class="icon"><i class="fas fa-sun"></i></span>
+        <span>Drought</span>
+    </button>
+    <button class="button is-medium" data-hazard="flood">
+        <span class="icon"><i class="fas fa-water"></i></span>
+        <span>Flood</span>
+    </button>
+</div>
+
+<div class="columns">
+    <div class="column is-8">
+        <div class="card" style="border-radius:1rem;">
+            <div class="card-content">
+                <h3 class="title is-4">CRMA Dashboard</h3>
+                <div class="content">
+                    {{ page.body|richtext }}
+                </div>
+                {% if page.crma_dashboard_url %}
+                <a class="button is-link is-outlined" href="{{ page.crma_dashboard_url }}" target="_blank">
+                    <span class="icon"><i class="fas fa-external-link-alt"></i></span>
+                    <span>Open Full CRMA Dashboard</span>
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="column is-4">
+        <div class="card has-background-dark has-text-white" style="border-radius:1rem;">
+            <div class="card-content">
+                <h3 class="title is-5 has-text-white">About CRMA</h3>
+                <p>Continuous Risk Monitoring & Assessment provides regional situational awareness for flood and drought hazards across East Africa.</p>
+                <p class="mt-3">Link to country-level CRMA dashboards for the chosen hazard. Daily flood monitoring becomes available once a month is selected.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.querySelectorAll('#hazardToggle .button').forEach(btn => {
+    btn.addEventListener('click', function() {
+        document.querySelectorAll('#hazardToggle .button').forEach(b => b.classList.remove('is-active'));
+        this.classList.add('is-active');
+    });
+});
+document.querySelectorAll('.navbar-burger').forEach(el => {
+    el.addEventListener('click', () => {
+        const target = document.getElementById(el.dataset.target);
+        el.classList.toggle('is-active');
+        target.classList.toggle('is-active');
+    });
+});
+</script>
+{% endblock %}

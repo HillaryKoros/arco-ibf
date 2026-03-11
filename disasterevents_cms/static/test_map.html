@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+</head>
+<body>
+<div id="map" style="width:800px;height:500px;border:1px solid #ccc;"></div>
+<pre id="log"></pre>
+<script>
+const log = s => { document.getElementById('log').textContent += s + '\n'; console.log(s); };
+
+log('D3 version: ' + d3.version);
+log('topojson available: ' + (typeof topojson !== 'undefined'));
+log('topojson.feature: ' + (typeof topojson.feature));
+
+fetch('http://localhost:8000/static/data/ea_adm2.topojson')
+  .then(r => { log('fetch status: ' + r.status); return r.json(); })
+  .then(data => {
+    log('keys: ' + Object.keys(data));
+    log('objects: ' + Object.keys(data.objects));
+    const objKey = Object.keys(data.objects)[0];
+    log('objKey: ' + objKey);
+    log('type: ' + data.objects[objKey].type);
+    log('geometries: ' + data.objects[objKey].geometries.length);
+    
+    const geojson = topojson.feature(data, data.objects[objKey]);
+    log('geojson features: ' + geojson.features.length);
+    log('first feature type: ' + geojson.features[0].geometry.type);
+    
+    const svg = d3.select('#map').append('svg').attr('width', 800).attr('height', 500);
+    const projection = d3.geoMercator().fitSize([800, 500], geojson);
+    const path = d3.geoPath(projection);
+    
+    svg.selectAll('path')
+      .data(geojson.features)
+      .enter()
+      .append('path')
+      .attr('d', path)
+      .attr('fill', '#fed976')
+      .attr('stroke', '#fff')
+      .attr('stroke-width', 0.3);
+    
+    log('Rendered ' + svg.selectAll('path').size() + ' paths');
+    
+    // Check if paths have actual d attributes
+    const firstD = svg.select('path').attr('d');
+    log('first path d length: ' + (firstD ? firstD.length : 'NULL'));
+  })
+  .catch(e => log('ERROR: ' + e));
+</script>
+</body>
+</html>

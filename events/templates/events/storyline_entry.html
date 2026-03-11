@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% load wagtailcore_tags %}
+
+{% block nav_events_active %}is-active has-text-warning{% endblock %}
+
+{% block content %}
+<nav class="breadcrumb" aria-label="breadcrumbs">
+    <ul>
+        <li><a href="/">Home</a></li>
+        {% for ancestor in page.get_ancestors.1 %}
+        <li><a href="{% pageurl ancestor %}">{{ ancestor.title }}</a></li>
+        {% endfor %}
+        <li class="is-active"><a>{{ page.title }}</a></li>
+    </ul>
+</nav>
+
+<div class="columns">
+    <div class="column is-8 is-offset-2">
+        <article class="card" style="border-radius:1rem;">
+            <div class="card-content">
+                <div class="mb-4">
+                    <span class="tag is-{{ page.hazard_type }}">{{ page.get_hazard_type_display }}</span>
+                    {% if page.event_date %}
+                    <span class="tag is-light">{{ page.event_date }}</span>
+                    {% endif %}
+                    {% if page.event_key %}
+                    <span class="tag is-info is-light">{{ page.event_key }}</span>
+                    {% endif %}
+                </div>
+                <h1 class="title is-3">{{ page.title }}</h1>
+                {% if page.regions_affected %}
+                <p class="has-text-grey mb-4">
+                    <span class="icon"><i class="fas fa-map-marker-alt"></i></span>
+                    Regions: {{ page.regions_affected }}
+                </p>
+                {% endif %}
+                <div class="content">
+                    {{ page.body|richtext }}
+                </div>
+            </div>
+        </article>
+    </div>
+</div>
+{% endblock %}

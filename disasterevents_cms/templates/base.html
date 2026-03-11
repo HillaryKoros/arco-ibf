@@ -1,0 +1,102 @@
+{% load static wagtailcore_tags wagtailuserbar %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>
+        {% block title %}
+        {% if page.seo_title %}{{ page.seo_title }}{% else %}{{ page.title }}{% endif %}
+        {% endblock %}
+        {% block title_suffix %}
+        {% wagtail_site as current_site %}
+        {% if current_site and current_site.site_name %} — {{ current_site.site_name }}{% endif %}
+        {% endblock %}
+    </title>
+    {% if page.search_description %}
+    <meta name="description" content="{{ page.search_description }}" />
+    {% endif %}
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    {% if request.in_preview_panel %}<base target="_blank">{% endif %}
+
+    <!-- Bulma CSS (matches geomanager-web pattern) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- D3.js -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <!-- TopoJSON -->
+    <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+    <!-- MapLibre GL -->
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <!-- Marked (Markdown renderer) -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+
+    <link rel="stylesheet" type="text/css" href="{% static 'css/disasterevents_cms.css' %}">
+    {% block extra_css %}{% endblock %}
+</head>
+
+<body class="{% block body_class %}{% endblock %}">
+    {% wagtailuserbar %}
+
+    <!-- Navbar -->
+    <nav class="navbar is-dark is-fixed-top" role="navigation" aria-label="main navigation">
+        <div class="navbar-brand">
+            <a class="navbar-item has-text-weight-bold" href="/">
+                <span class="icon mr-2"><i class="fas fa-exclamation-triangle"></i></span>
+                E4DRR Early Warning
+            </a>
+            <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false" data-target="mainNavbar">
+                <span aria-hidden="true"></span>
+                <span aria-hidden="true"></span>
+                <span aria-hidden="true"></span>
+            </a>
+        </div>
+        <div id="mainNavbar" class="navbar-menu">
+            <div class="navbar-start">
+                {% block nav_items %}
+                <a class="navbar-item {% block nav_events_active %}{% endblock %}" href="{% block events_url %}/disaster-events/{% endblock %}">
+                    <span class="icon"><i class="fas fa-calendar-alt"></i></span>
+                    <span>Disaster Events</span>
+                </a>
+                <a class="navbar-item {% block nav_monitoring_active %}{% endblock %}" href="{% block monitoring_url %}/risk-monitoring/{% endblock %}">
+                    <span class="icon"><i class="fas fa-chart-line"></i></span>
+                    <span>Risk Monitoring</span>
+                </a>
+                <a class="navbar-item {% block nav_forecast_active %}{% endblock %}" href="{% block forecast_url %}/ibf-forecast/{% endblock %}">
+                    <span class="icon"><i class="fas fa-cloud-sun-rain"></i></span>
+                    <span>IBF Forecast</span>
+                </a>
+                {% endblock %}
+            </div>
+            <div class="navbar-end">
+                <div class="navbar-item">
+                    <span class="tag is-info is-light">ICPAC / IGAD</span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main content (padded for fixed navbar) -->
+    <section class="section" style="margin-top: 52px;">
+        <div class="container is-fluid">
+            {% block content %}{% endblock %}
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="content has-text-centered">
+            <p>
+                <strong>E4DRR</strong> — Disaster Events CMS for Early Warning.
+                <a href="https://www.icpac.net" target="_blank">ICPAC</a> /
+                <a href="https://igad.int" target="_blank">IGAD</a>
+            </p>
+        </div>
+    </footer>
+
+    <script type="text/javascript" src="{% static 'js/disasterevents_cms.js' %}"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

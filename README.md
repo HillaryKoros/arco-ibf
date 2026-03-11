@@ -162,6 +162,62 @@ arco-ibf/
 - **URL**: http://41.139.151.242:9080
 - **CMS Admin**: http://41.139.151.242:9080/admin/
 
+## Future Integration — Google Cloud Run & Cloud SQL
+
+The current Docker Compose stack is designed as a portable boilerplate that maps directly to managed cloud services. Below is the migration path to Google Cloud Platform:
+
+### Service Mapping
+
+| Current (Docker Compose) | GCP Equivalent | Notes |
+|--------------------------|----------------|-------|
+| **db** (PostGIS container) | **Cloud SQL for PostgreSQL** | Enable PostGIS extension; use private IP for VPC connectivity |
+| **cms** (Wagtail) | **Cloud Run** (service) | Stateless container; connect to Cloud SQL via Unix socket proxy |
+| **geoapi** (FastAPI + TiPG) | **Cloud Run** (service) | Stateless; connect to same Cloud SQL instance |
+| **frontend** (Next.js) | **Cloud Run** (service) | SSR container; env vars point to CMS/GeoAPI internal URLs |
+| **titiler** (COG raster) | **Cloud Run** (service) | Stateless; reads COGs from GCS buckets |
+| **nginx** (reverse proxy) | **Cloud Load Balancer** + **Cloud Run URL maps** | Or use Firebase Hosting rewrites for path-based routing |
+| **media volumes** | **Google Cloud Storage (GCS)** | Django Storages backend (`django-storages[google]`) |
+| **GHCR** | **Artifact Registry** | Store container images in GCP's registry |
+
+### Migration Steps
+
+1. **Database**: Create a Cloud SQL PostgreSQL instance with PostGIS, migrate data using `pg_dump` / `pg_restore`
+2. **Container Images**: Push to Artifact Registry (`gcr.io/{project}/crma-cms`, etc.) or keep GHCR
+3. **Cloud Run Services**: Deploy each service as a separate Cloud Run service with:
+   - Cloud SQL connection via `--add-cloudsql-instances`
+   - Environment variables for DB credentials (use Secret Manager)
+   - Min instances = 0 for cost savings, or = 1 for low latency
+4. **Routing**: Use Cloud Load Balancer with URL maps:
+   - `/` → frontend Cloud Run service
+   - `/api/*`, `/admin/*` → cms Cloud Run service
+   - `/geo/*` → geoapi Cloud Run service
+   - `/cog/*` → titiler Cloud Run service
+5. **Storage**: Switch Django media backend to GCS using `django-storages`
+6. **CI/CD**: Update GitHub Actions deploy step to use `gcloud run deploy` instead of SSH
+
+### Example Cloud Run Deploy (CI/CD)
+
+```yaml
+# Replace the SSH deploy step with:
+- name: Deploy CMS to Cloud Run
+  run: |
+    gcloud run deploy crma-cms \
+      --image ${{ env.REGISTRY }}/${{ env.OWNER }}/crma-cms:latest \
+      --region us-central1 \
+      --platform managed \
+      --add-cloudsql-instances ${{ secrets.CLOUD_SQL_INSTANCE }} \
+      --set-env-vars "DB_ENGINE=django.contrib.gis.db.backends.postgis" \
+      --set-secrets "DB_PASSWORD=crma-db-password:latest" \
+      --allow-unauthenticated
+```
+
+### Cost Optimization
+
+- Cloud Run scales to zero when idle (pay only for requests)
+- Cloud SQL can use a small instance (db-f1-micro) for dev/staging
+- Titiler reads COGs directly from GCS — no persistent storage needed
+- Use Cloud CDN in front of the load balancer for caching tiles
+
 ## License
 
 ICPAC / IGAD — E4DRR Project

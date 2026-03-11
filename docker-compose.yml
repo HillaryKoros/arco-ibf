@@ -120,6 +120,7 @@ services:
     restart: unless-stopped
     environment:
       TITILER_API_CORS_ORIGINS: '["*"]'
+      TITILER_API_ROOT_PATH: /cog
 
   # ── 6. Next.js Frontend ────────────────────────────────────────────────────
   # SSR dashboard: CRMA compare maps, calendar heatmaps, storylines.

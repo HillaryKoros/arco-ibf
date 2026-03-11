@@ -3,11 +3,10 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Triggers:
-#   - Push to crma-deployed → build + check + security + deploy to staging
-#   - Pull request           → build + check + security only
+#   - Push to crma-deployed → checksum + build + check + security + deploy
+#   - Pull request           → checksum + build + check + security only
 #
-# Staging: via SSH (secrets configured in repo)
-# Entry point: nginx on port 9080
+# Uses SHA256 checksums to skip image rebuilds when content hasn't changed.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 name: CRMA CI/CD
@@ -23,10 +22,117 @@ env:
 
 jobs:
 
-  # ── Build & Push Images ────────────────────────────────────────────────────
+  # ── Compute checksums & decide what to rebuild ────────────────────────────
+  checksums:
+    name: Checksum Detection
+    runs-on: ubuntu-latest
+    outputs:
+      cms_changed: ${{ steps.compare.outputs.cms_changed }}
+      geoapi_changed: ${{ steps.compare.outputs.geoapi_changed }}
+      frontend_changed: ${{ steps.compare.outputs.frontend_changed }}
+      infra_changed: ${{ steps.compare.outputs.infra_changed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute current checksums
+        id: hash
+        run: |
+          # CMS: Dockerfile + requirements + all Django source
+          CMS_HASH=$(find Dockerfile requirements.txt disasterevents_cms/ events/ home/ search/ manage.py \
+            -type f 2>/dev/null | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+          echo "cms=$CMS_HASH" >> $GITHUB_OUTPUT
+
+          # GeoAPI: everything under geoapi/
+          GEOAPI_HASH=$(find geoapi/ -type f 2>/dev/null | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+          echo "geoapi=$GEOAPI_HASH" >> $GITHUB_OUTPUT
+
+          # Frontend: everything under frontend/
+          FRONTEND_HASH=$(find frontend/ -type f -not -path 'frontend/node_modules/*' -not -path 'frontend/.next/*' \
+            2>/dev/null | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+          echo "frontend=$FRONTEND_HASH" >> $GITHUB_OUTPUT
+
+          # Infra: compose, nginx, db-init, workflows
+          INFRA_HASH=$(find docker-compose.yml nginx/ db-init/ .github/workflows/ \
+            -type f 2>/dev/null | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+          echo "infra=$INFRA_HASH" >> $GITHUB_OUTPUT
+
+          echo "CMS=$CMS_HASH  GEOAPI=$GEOAPI_HASH  FRONTEND=$FRONTEND_HASH  INFRA=$INFRA_HASH"
+
+      # Restore previous checksums from cache
+      - name: Restore previous checksums
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .checksums
+          key: crma-checksums-dummy
+          restore-keys: crma-checksums-
+
+      - name: Compare checksums
+        id: compare
+        run: |
+          # Load previous hashes (if any)
+          PREV_CMS="" PREV_GEOAPI="" PREV_FRONTEND="" PREV_INFRA=""
+          if [ -f .checksums ]; then
+            source .checksums
+          fi
+
+          # Compare
+          if [ "$PREV_CMS" = "${{ steps.hash.outputs.cms }}" ]; then
+            echo "cms_changed=false" >> $GITHUB_OUTPUT
+            echo "✅ CMS unchanged"
+          else
+            echo "cms_changed=true" >> $GITHUB_OUTPUT
+            echo "🔄 CMS changed"
+          fi
+
+          if [ "$PREV_GEOAPI" = "${{ steps.hash.outputs.geoapi }}" ]; then
+            echo "geoapi_changed=false" >> $GITHUB_OUTPUT
+            echo "✅ GeoAPI unchanged"
+          else
+            echo "geoapi_changed=true" >> $GITHUB_OUTPUT
+            echo "🔄 GeoAPI changed"
+          fi
+
+          if [ "$PREV_FRONTEND" = "${{ steps.hash.outputs.frontend }}" ]; then
+            echo "frontend_changed=false" >> $GITHUB_OUTPUT
+            echo "✅ Frontend unchanged"
+          else
+            echo "frontend_changed=true" >> $GITHUB_OUTPUT
+            echo "🔄 Frontend changed"
+          fi
+
+          if [ "$PREV_INFRA" = "${{ steps.hash.outputs.infra }}" ]; then
+            echo "infra_changed=false" >> $GITHUB_OUTPUT
+            echo "✅ Infra unchanged"
+          else
+            echo "infra_changed=true" >> $GITHUB_OUTPUT
+            echo "🔄 Infra changed"
+          fi
+
+      # Save new checksums (only on push to main branch, after successful detection)
+      - name: Save checksums
+        if: github.event_name == 'push'
+        run: |
+          cat > .checksums << 'HASHEOF'
+          PREV_CMS="${{ steps.hash.outputs.cms }}"
+          PREV_GEOAPI="${{ steps.hash.outputs.geoapi }}"
+          PREV_FRONTEND="${{ steps.hash.outputs.frontend }}"
+          PREV_INFRA="${{ steps.hash.outputs.infra }}"
+          HASHEOF
+
+      - name: Update checksum cache
+        if: github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          path: .checksums
+          key: crma-checksums-${{ github.sha }}
+
+  # ── Build & Push Images (only changed) ─────────────────────────────────────
   build:
     name: Build Images
     runs-on: ubuntu-latest
+    needs: checksums
+    if: needs.checksums.outputs.cms_changed == 'true' || needs.checksums.outputs.geoapi_changed == 'true' || needs.checksums.outputs.frontend_changed == 'true'
     permissions:
       contents: read
       packages: write
@@ -50,6 +156,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build CMS image
+        if: needs.checksums.outputs.cms_changed == 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -62,6 +169,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=cms
 
       - name: Build GeoAPI image
+        if: needs.checksums.outputs.geoapi_changed == 'true'
         uses: docker/build-push-action@v5
         with:
           context: ./geoapi
@@ -74,6 +182,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=geoapi
 
       - name: Build Frontend image
+        if: needs.checksums.outputs.frontend_changed == 'true'
         uses: docker/build-push-action@v5
         with:
           context: ./frontend
@@ -85,10 +194,12 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
-  # ── Lint & Type Check ─────────────────────────────────────────────────────
+  # ── Lint & Type Check (only if frontend changed) ──────────────────────────
   check:
     name: Lint & Check
     runs-on: ubuntu-latest
+    needs: checksums
+    if: needs.checksums.outputs.frontend_changed == 'true'
 
     steps:
       - name: Checkout
@@ -117,6 +228,8 @@ jobs:
   security:
     name: Security Scan
     runs-on: ubuntu-latest
+    needs: checksums
+    if: needs.checksums.outputs.cms_changed == 'true' || needs.checksums.outputs.geoapi_changed == 'true' || needs.checksums.outputs.frontend_changed == 'true'
     permissions:
       contents: read
       security-events: write
@@ -125,7 +238,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run Trivy vulnerability scanner (filesystem)
+      - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
@@ -134,6 +247,7 @@ jobs:
           format: table
 
       - name: Setup Node.js
+        if: needs.checksums.outputs.frontend_changed == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -141,15 +255,18 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Audit frontend dependencies
+        if: needs.checksums.outputs.frontend_changed == 'true'
         run: npm audit --audit-level=high || true
         working-directory: frontend
 
       - name: Setup Python
+        if: needs.checksums.outputs.cms_changed == 'true' || needs.checksums.outputs.geoapi_changed == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Audit Python dependencies
+        if: needs.checksums.outputs.cms_changed == 'true' || needs.checksums.outputs.geoapi_changed == 'true'
         run: |
           pip install pip-audit
           pip-audit -r requirements.txt || true
@@ -159,8 +276,14 @@ jobs:
   deploy:
     name: Deploy to Staging
     runs-on: ubuntu-latest
-    needs: [build, check, security]
-    if: github.ref == 'refs/heads/crma-deployed' && github.event_name == 'push'
+    needs: [checksums, build, check, security]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/crma-deployed' &&
+      github.event_name == 'push' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped') &&
+      (needs.check.result == 'success' || needs.check.result == 'skipped') &&
+      (needs.security.result == 'success' || needs.security.result == 'skipped')
     environment: staging
 
     steps:
@@ -194,18 +317,18 @@ jobs:
               cp .env.example .env
             fi
 
-            # Pull pre-built images from GHCR (built by CI, no local build needed)
+            # Pull pre-built images from GHCR
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             docker pull ${REGISTRY}/${PREFIX}/crma-cms:latest || true
             docker pull ${REGISTRY}/${PREFIX}/crma-geoapi:latest || true
             docker pull ${REGISTRY}/${PREFIX}/crma-frontend:latest || true
 
-            # Tag pulled images so docker compose uses them
+            # Tag for docker compose
             docker tag ${REGISTRY}/${PREFIX}/crma-cms:latest crma-cms:latest 2>/dev/null || true
             docker tag ${REGISTRY}/${PREFIX}/crma-geoapi:latest crma-geoapi:latest 2>/dev/null || true
             docker tag ${REGISTRY}/${PREFIX}/crma-frontend:latest crma-frontend:latest 2>/dev/null || true
 
-            # Start services (--build as fallback if pull failed)
+            # Start/update services
             docker compose up -d --remove-orphans
 
             # Verify

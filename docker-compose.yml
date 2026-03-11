@@ -1,36 +1,56 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# E4DRR — Disaster Events CMS  |  Docker Compose Stack
+# E4DRR CRMA — Docker Compose Stack
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# 5 services:
+# 6 services:
+#   nginx    — Reverse proxy (single entry point, port 9080)
 #   db       — PostGIS database (shared by CMS + GeoAPI)
 #   cms      — Django/Wagtail CMS (content management + REST API)
 #   geoapi   — FastAPI + TiPG (OGC vector tiles, features, custom geo endpoints)
-#   titiler  — Titiler (COG raster tile server — placeholder, integrate later)
-#   frontend — Next.js (SSR dashboard, proxies all backend APIs)
+#   titiler  — Titiler (COG raster tile server — placeholder)
+#   frontend — Next.js (SSR dashboard)
 #
 # Quick start:
 #   cp .env.example .env
 #   docker compose up -d
-#   open http://localhost:9204
+#   open http://localhost:9080
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 
 services:
 
-  # ── 1. PostGIS Database ─────────────────────────────────────────────────────
+  # ── 1. Nginx Reverse Proxy ──────────────────────────────────────────────────
+  # Single entry point for all traffic. Routes:
+  #   /          → frontend (Next.js)
+  #   /api/      → cms (Wagtail REST API)
+  #   /admin/    → cms (Wagtail admin)
+  #   /geo/      → geoapi (TiPG + custom endpoints)
+  #   /cog/      → titiler (raster tiles)
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: crma-nginx
+    restart: unless-stopped
+    ports:
+      - "${CRMA_PORT:-9080}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro,z
+    depends_on:
+      - frontend
+      - cms
+      - geoapi
+
+  # ── 2. PostGIS Database ─────────────────────────────────────────────────────
   # Shared by CMS (Django ORM) and GeoAPI (TiPG + asyncpg).
   # On first start: runs db-init/ scripts to create tables, load GADM
   # admin boundaries (admin0/1/2), and seed EM-DAT disaster events.
   db:
     image: postgis/postgis:16-3.4
+    container_name: crma-db
     restart: unless-stopped
     environment:
       POSTGRES_DB: e4drr
       POSTGRES_USER: e4drr
       POSTGRES_PASSWORD: ${DB_PASSWORD:-e4drr_dev}
-    ports:
-      - "9200:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db-init:/docker-entrypoint-initdb.d:z
@@ -40,17 +60,15 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── 2. Wagtail CMS ─────────────────────────────────────────────────────────
+  # ── 3. Wagtail CMS ─────────────────────────────────────────────────────────
   # Django/Wagtail for content management: storyline pages, hazard narratives,
-  # media uploads. Exposes REST API at /api/v2/ for the frontend to consume.
-  # Runs migrations on startup, serves via Gunicorn.
+  # media uploads. Exposes REST API at /api/v2/ for the frontend.
   cms:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: crma-cms
     restart: unless-stopped
-    ports:
-      - "9201:8000"
     environment:
       DB_ENGINE: django.contrib.gis.db.backends.postgis
       DB_NAME: e4drr
@@ -65,21 +83,16 @@ services:
     volumes:
       - media:/app/media
 
-  # ── 3. GeoAPI (FastAPI + TiPG) ─────────────────────────────────────────────
+  # ── 4. GeoAPI (FastAPI + TiPG) ─────────────────────────────────────────────
   # Custom FastAPI wrapper embedding TiPG's OGC router.
-  # Two layers:
   #   - OGC endpoints (TiPG):  /collections/* — vector tiles + features
   #   - Custom endpoints:      /api/*         — calendar, choropleth, bbox, events
-  #
-  # TiPG auto-discovers all PostGIS tables, views, and SQL functions.
-  # Admin boundaries served as vector tiles (MVT) for MapLibre rendering.
   geoapi:
     build:
       context: ./geoapi
       dockerfile: Dockerfile
+    container_name: crma-geoapi
     restart: unless-stopped
-    ports:
-      - "9202:8080"
     environment:
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
@@ -96,35 +109,24 @@ services:
       timeout: 5s
       retries: 3
 
-  # ── 4. Titiler (Raster Tile Server) ────────────────────────────────────────
-  # Serves Cloud-Optimized GeoTIFFs (COGs) as dynamic raster tiles.
-  # Used for satellite imagery overlays, climate model outputs, etc.
-  # Currently standalone — will merge into geoapi later.
+  # ── 5. Titiler (Raster Tile Server) ────────────────────────────────────────
+  # Serves COGs as dynamic raster tiles. Placeholder — integrate later.
   titiler:
     image: ghcr.io/developmentseed/titiler:latest
+    container_name: crma-titiler
     restart: unless-stopped
-    ports:
-      - "9203:8080"
     environment:
       TITILER_API_CORS_ORIGINS: '["*"]'
 
-  # ── 5. Next.js Frontend ────────────────────────────────────────────────────
-  # SSR dashboard with:
-  #   - CRMA compare maps (admin0 choropleth — drought vs flood)
-  #   - Individual hazard view (admin1 choropleth + calendar heatmap)
-  #   - Scroll-driven storyline panels
-  #
-  # Proxies all backend APIs via Next.js rewrites:
-  #   /api/*  → cms:8000     (Wagtail REST API)
-  #   /geo/*  → geoapi:8080  (OGC + custom geo endpoints)
-  #   /cog/*  → titiler:8080 (raster tiles)
+  # ── 6. Next.js Frontend ────────────────────────────────────────────────────
+  # SSR dashboard: CRMA compare maps, calendar heatmaps, storylines.
+  # Next.js rewrites proxy to backend services (used in dev; nginx handles in prod).
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    container_name: crma-frontend
     restart: unless-stopped
-    ports:
-      - "9204:3000"
     environment:
       CMS_API_URL: http://cms:8000
       GEO_API_URL: http://geoapi:8080

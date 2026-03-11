@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { HazardToggle } from "@/components/ui/hazard-toggle";
 import { CalendarHeatmap } from "@/components/calendar/calendar-heatmap";
@@ -39,6 +40,9 @@ interface Props {
 const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 export function CRMADashboard({ stories }: Props) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [hazard, setHazard] = useState<HazardType | null>(null);
   const [selectedEventKey, setSelectedEventKey] = useState<string | null>(null);
 
@@ -54,6 +58,34 @@ export function CRMADashboard({ stories }: Props) {
   // Synced timeline selection (shared between both calendars on default view)
   const [selectedCell, setSelectedCell] = useState<string | null>(null);
   const [timeLabel, setTimeLabel] = useState<string | null>(null);
+
+  // Track whether we've initialized from URL params
+  const [initialized, setInitialized] = useState(false);
+
+  // ── Update URL when state changes ──
+  const updateURL = useCallback((h: HazardType | null, month: string | null) => {
+    const params = new URLSearchParams();
+    if (h) params.set("hazard", h);
+    if (month) params.set("month", month);
+    const qs = params.toString();
+    router.replace(qs ? `?${qs}` : "/", { scroll: false });
+  }, [router]);
+
+  // ── Restore state from URL on mount ──
+  useEffect(() => {
+    const urlHazard = searchParams.get("hazard") as HazardType | null;
+    const urlMonth = searchParams.get("month"); // "YYYY-MM"
+
+    if (urlHazard === "drought" || urlHazard === "flood") {
+      setHazard(urlHazard);
+    }
+    if (urlMonth && /^\d{4}-\d{2}$/.test(urlMonth)) {
+      setSelectedCell(urlMonth);
+      const [y, m] = urlMonth.split("-").map(Number);
+      setTimeLabel(`${MONTHS_SHORT[m - 1]} ${y}`);
+    }
+    setInitialized(true);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch all data on mount
   useEffect(() => {
@@ -72,6 +104,7 @@ export function CRMADashboard({ stories }: Props) {
     if (!sel) {
       setSelectedCell(null);
       setTimeLabel(null);
+      updateURL(null, null);
       // Reset to all-time data
       getChoroplethRegions("drought").then(setDroughtRegions);
       getChoroplethRegions("flood").then(setFloodRegions);
@@ -81,24 +114,36 @@ export function CRMADashboard({ stories }: Props) {
     const cellKey = `${sel.year}-${String(sel.month).padStart(2, "0")}`;
     setSelectedCell(cellKey);
     setTimeLabel(`${MONTHS_SHORT[sel.month - 1]} ${sel.year}`);
+    updateURL(null, cellKey);
 
     // Update both maps for this year/month
     getChoroplethRegions("drought", { year: sel.year, month: sel.month }).then(setDroughtRegions);
     getChoroplethRegions("flood", { year: sel.year, month: sel.month }).then(setFloodRegions);
-  }, []);
+  }, [updateURL]);
 
   // ── Selected hazard view ──
   const activeData = hazard === "drought" ? droughtData : hazard === "flood" ? floodData : null;
   const activeEventCount = hazard === "drought" ? droughtEventCount : floodEventCount;
 
-  // Fetch regions when hazard is selected
+  // Fetch regions when hazard is selected + restore month from URL on init
   useEffect(() => {
-    setSelectedEventKey(null);
-    setSelectedCell(null);
-    setTimeLabel(null);
     if (!hazard) return;
-    getChoroplethRegions(hazard).then(setRegions);
-  }, [hazard]);
+
+    // On first load, check if URL has a month to restore
+    const urlMonth = searchParams.get("month");
+    if (!initialized) return; // wait for init
+
+    if (urlMonth && /^\d{4}-\d{2}$/.test(urlMonth) && selectedCell === urlMonth) {
+      // Restore from URL — fetch filtered data
+      const [y, m] = urlMonth.split("-").map(Number);
+      getChoroplethRegions(hazard, { year: y, month: m }).then(setRegions);
+    } else {
+      setSelectedEventKey(null);
+      setSelectedCell(null);
+      setTimeLabel(null);
+      getChoroplethRegions(hazard).then(setRegions);
+    }
+  }, [hazard, initialized]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync single-hazard choropleth when calendar cell is clicked
   const onHazardCellSelect = useCallback((sel: CalendarSelection | null) => {
@@ -107,6 +152,7 @@ export function CRMADashboard({ stories }: Props) {
       setSelectedCell(null);
       setTimeLabel(null);
       setRegions([]);
+      updateURL(hazard, null);
       return;
     }
 
@@ -114,13 +160,14 @@ export function CRMADashboard({ stories }: Props) {
     setSelectedCell(cellKey);
     setSelectedEventKey(sel.eventKey);
     setTimeLabel(`${MONTHS_SHORT[sel.month - 1]} ${sel.year}`);
+    updateURL(hazard, cellKey);
 
     if (sel.hasEvents) {
       getChoroplethRegions(hazard, { year: sel.year, month: sel.month }).then(setRegions);
     } else {
       setRegions([]);
     }
-  }, [hazard]);
+  }, [hazard, updateURL]);
 
   return (
     <>
@@ -143,7 +190,10 @@ export function CRMADashboard({ stories }: Props) {
         </div>
 
         {/* Hazard Toggle */}
-        <HazardToggle value={hazard} onChange={setHazard} />
+        <HazardToggle value={hazard} onChange={(h) => {
+          setHazard(h);
+          updateURL(h, null);
+        }} />
 
         {/* ══════════════════════════════════════════════════════════════
             DEFAULT VIEW: Compare maps + synced timeline

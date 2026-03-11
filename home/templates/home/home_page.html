@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% load wagtailcore_tags %}
+
+{% block content %}
+<!-- Hero -->
+<div class="hero is-medium is-dark mb-6" style="border-radius:1rem;background:linear-gradient(135deg,#0f2441 0%,#1a3a5c 100%);">
+    <div class="hero-body">
+        <h1 class="title is-1 has-text-white">{{ page.banner_title }}</h1>
+        <p class="subtitle is-4 has-text-grey-lighter">{{ page.banner_subtitle }}</p>
+        <div class="content has-text-grey-light">
+            {{ page.intro_text|richtext }}
+        </div>
+    </div>
+</div>
+
+<!-- Navigation Cards -->
+<div class="columns">
+    {% for child in child_pages %}
+    <div class="column is-4">
+        <a href="{% pageurl child %}" class="box" style="border-radius:1rem;height:100%;display:block;transition:transform 0.2s;">
+            <div class="content">
+                {% if "Disaster Events" in child.title %}
+                <span class="icon is-large has-text-danger"><i class="fas fa-calendar-alt fa-2x"></i></span>
+                {% elif "Risk" in child.title %}
+                <span class="icon is-large has-text-info"><i class="fas fa-chart-line fa-2x"></i></span>
+                {% elif "IBF" in child.title or "Forecast" in child.title %}
+                <span class="icon is-large has-text-warning"><i class="fas fa-cloud-sun-rain fa-2x"></i></span>
+                {% endif %}
+                <h3 class="title is-4 mt-3">{{ child.title }}</h3>
+                <p class="has-text-grey">
+                    {% if child.specific.subtitle %}
+                        {{ child.specific.subtitle }}
+                    {% endif %}
+                </p>
+            </div>
+        </a>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

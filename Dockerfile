@@ -28,7 +28,7 @@ RUN apt-get update --yes --quiet && apt-get install --yes --quiet --no-install-r
  && rm -rf /var/lib/apt/lists/*
 
 # Install the application server.
-RUN pip install "gunicorn==20.0.4"
+RUN pip install "gunicorn==22.0.0"
 
 # Install the project requirements.
 COPY requirements.txt /
@@ -60,4 +60,4 @@ RUN python manage.py collectstatic --noinput --clear
 #   PRACTICE. The database should be migrated manually or using the release
 #   phase facilities of your hosting platform. This is used only so the
 #   Wagtail instance can be started with a simple "docker run" command.
-CMD set -xe; python manage.py migrate --noinput; gunicorn disasterevents_cms.wsgi:application
+CMD set -xe; python manage.py migrate --noinput; gunicorn disasterevents_cms.wsgi:application --bind 0.0.0.0:8000

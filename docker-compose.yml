@@ -38,6 +38,7 @@ services:
       - frontend
       - cms
       - geoapi
+      - dataapi
 
   # ── 2. PostGIS Database ─────────────────────────────────────────────────────
   # Shared by CMS (Django ORM) and GeoAPI (TiPG + asyncpg).
@@ -122,7 +123,28 @@ services:
       TITILER_API_CORS_ORIGINS: '["*"]'
       TITILER_API_ROOT_PATH: /cog
 
-  # ── 6. Next.js Frontend ────────────────────────────────────────────────────
+  # ── 6. Data API (FastAPI + Parquet) ─────────────────────────────────────────
+  # Reads EM-DAT parquet files directly. Serves calendar data, region data,
+  # and event markdown without needing the PostGIS database.
+  #   - /api/emdat-monthly-risk?type=drought|flood
+  #   - /api/emdat-month-regions/{event_key}
+  #   - /api/emdat-event-markdown/{event_key}
+  dataapi:
+    image: crma-dataapi:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.dataapi
+    container_name: crma-dataapi
+    restart: unless-stopped
+    environment:
+      PARQUET_DIR: /app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── 7. Next.js Frontend ────────────────────────────────────────────────────
   # SSR dashboard: CRMA compare maps, calendar heatmaps, storylines.
   # Next.js rewrites proxy to backend services (used in dev; nginx handles in prod).
   frontend:
@@ -136,9 +158,11 @@ services:
       CMS_API_URL: http://cms:8000
       GEO_API_URL: http://geoapi:8080
       TITILER_API_URL: http://titiler:80
+      DATA_API_URL: http://dataapi:8000
     depends_on:
       - cms
       - geoapi
+      - dataapi
 
 volumes:
   pgdata:

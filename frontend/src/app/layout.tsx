@@ -1,6 +1,8 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
 import "@/styles/globals.css";
 import { Navbar } from "@/components/ui/navbar";
+import { PipelineProvider } from "@/store/pipeline-context";
 
 export const metadata: Metadata = {
   title: "CRMA — Continuous Risk Monitoring & Assessment",
@@ -12,7 +14,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <Navbar />
-        <main className="pt-14">{children}</main>
+        <Suspense fallback={null}>
+          <PipelineProvider>
+            <main className="pt-14">{children}</main>
+          </PipelineProvider>
+        </Suspense>
       </body>
     </html>
   );

@@ -11,25 +11,44 @@ const GEO_BASE = "/geo";
 
 // ── Custom domain endpoints (FastAPI) ───────────────────────────────────────
 
-/** Calendar heatmap data — monthly aggregation from SQL function */
+/** Calendar heatmap data — reads from EM-DAT parquet API (FastAPI) */
 export async function getCalendarData(hazard: "drought" | "flood") {
-  const res = await fetch(`${GEO_BASE}/api/calendar?hazard=${hazard}`);
-  const rows = await res.json();
-  return rows.map((r: Record<string, unknown>) => ({
-    year: r.year as number,
-    month: r.month as number,
-    event_count: r.event_count as number,
-    event_key: ((r.event_keys as string[]) || [])[0] || "",
-    total_deaths: (r.total_deaths as number) || 0,
-    total_affected: (r.total_affected as number) || 0,
-    regions_affected: ((r.countries as string[]) || []).length,
-    countries_affected: ((r.countries as string[]) || []).length,
-    level:
-      r.max_severity === "extreme" ? 4
-      : r.max_severity === "severe" ? 3
-      : r.max_severity === "high" ? 2
-      : 1,
-  }));
+  try {
+    const res = await fetch(`/api/emdat-monthly-risk?type=${hazard}`);
+    if (res.ok) {
+      const json = await res.json();
+      return json.data || json;
+    }
+  } catch {
+    // parquet API unavailable
+  }
+
+  // Fallback: geo-api (Docker stack)
+  try {
+    const res = await fetch(`${GEO_BASE}/api/calendar?hazard=${hazard}`);
+    if (res.ok) {
+      const rows = await res.json();
+      return rows.map((r: Record<string, unknown>) => ({
+        year: r.year as number,
+        month: r.month as number,
+        event_count: r.event_count as number,
+        event_key: ((r.event_keys as string[]) || [])[0] || "",
+        total_deaths: (r.total_deaths as number) || 0,
+        total_affected: (r.total_affected as number) || 0,
+        regions_affected: ((r.countries as string[]) || []).length,
+        countries_affected: ((r.countries as string[]) || []).length,
+        level:
+          r.max_severity === "extreme" ? 4
+          : r.max_severity === "severe" ? 3
+          : r.max_severity === "high" ? 2
+          : 1,
+      }));
+    }
+  } catch {
+    // geo-api also unavailable
+  }
+
+  return [];
 }
 
 /** Choropleth regions — country frequency for a hazard, optionally filtered by time */

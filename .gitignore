@@ -32,3 +32,6 @@ pgdata/
 
 # Large boundary data (download separately)
 db-init/data/*.geojson
+
+# Local agent (dev tool, not deployed)
+agent/

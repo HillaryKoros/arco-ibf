@@ -1,0 +1,6 @@
+pypgstac>=0.9.0
+pystac>=1.10.0
+topojson>=1.8
+pandas>=2.0
+pyarrow>=14.0
+psycopg[binary]>=3.1

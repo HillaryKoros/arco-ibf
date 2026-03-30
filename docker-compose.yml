@@ -113,15 +113,69 @@ services:
       timeout: 5s
       retries: 3
 
-  # ── 5. Titiler (Raster Tile Server) ────────────────────────────────────────
-  # Serves COGs as dynamic raster tiles. Placeholder — integrate later.
+  # ── 5. PgSTAC Database ─────────────────────────────────────────────────────
+  # STAC catalog backed by PostgreSQL. Stores collections + items for
+  # admin boundaries, disaster events, and (later) raster COG references.
+  pgstac:
+    image: ghcr.io/stac-utils/pgstac:v0.9.5
+    container_name: crma-pgstac
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pgstac
+      POSTGRES_USER: pgstac
+      POSTGRES_PASSWORD: ${PGSTAC_PASSWORD:-pgstac_dev}
+      PGUSER: pgstac
+      PGPASSWORD: ${PGSTAC_PASSWORD:-pgstac_dev}
+      PGDATABASE: pgstac
+    volumes:
+      - pgstacdata:/var/lib/postgresql/data
+    ports:
+      - "5439:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pgstac"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── 6. STAC API (stac-fastapi-pgstac) ─────────────────────────────────────
+  # OGC STAC API serving collections and items from pgstac.
+  stacapi:
+    image: ghcr.io/stac-utils/stac-fastapi-pgstac:latest
+    container_name: crma-stacapi
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST_READER: pgstac
+      POSTGRES_HOST_WRITER: pgstac
+      POSTGRES_PORT: "5432"
+      POSTGRES_DBNAME: pgstac
+      POSTGRES_USER: pgstac
+      POSTGRES_PASS: ${PGSTAC_PASSWORD:-pgstac_dev}
+      DB_MIN_CONN_SIZE: "1"
+      DB_MAX_CONN_SIZE: "10"
+      APP_ROOT_PATH: /stac
+    depends_on:
+      pgstac:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── 7. Titiler + PgSTAC (Raster Tile Server) ──────────────────────────────
+  # Serves COGs as dynamic raster tiles, backed by pgstac for mosaic queries.
   titiler:
-    image: ghcr.io/developmentseed/titiler:latest
+    image: ghcr.io/stac-utils/titiler-pgstac:1.7.2
     container_name: crma-titiler
     restart: unless-stopped
     environment:
-      TITILER_API_CORS_ORIGINS: '["*"]'
-      TITILER_API_ROOT_PATH: /cog
+      POSTGRES_HOST: pgstac
+      POSTGRES_PORT: "5432"
+      POSTGRES_DBNAME: pgstac
+      POSTGRES_USER: pgstac
+      POSTGRES_PASS: ${PGSTAC_PASSWORD:-pgstac_dev}
+      TITILER_PGSTAC_API_ROOT_PATH: /cog
+      TITILER_PGSTAC_CACHE_DISABLE: "true"
 
   # ── 6. Data API (FastAPI + Parquet) ─────────────────────────────────────────
   # Reads EM-DAT parquet files directly. Serves calendar data, region data,
@@ -166,4 +220,5 @@ services:
 
 volumes:
   pgdata:
+  pgstacdata:
   media:

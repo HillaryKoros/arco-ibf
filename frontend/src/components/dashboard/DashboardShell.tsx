@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
+import Link from 'next/link';
 import { PipelineChips } from '@/components/dashboard/PipelineChips';
 import { StagePanels } from '@/components/dashboard/StagePanels';
 import { CalendarHeatmap } from '@/components/calendar/calendar-heatmap';
@@ -11,40 +12,16 @@ import { fetchEmdatMonthlyRisk } from '@/lib/api/emdat';
 import { usePipelineStore } from '@/store/pipeline-context';
 import { getCalendarConfig } from '@/types/pipeline';
 import type { EmdatMonthDatum } from '@/types/emdat';
-import type { MDXRemoteSerializeResult } from 'next-mdx-remote';
-
-const StorylinePanel = dynamic(
-  () => import('@/components/storyline/storyline-panel').then((m) => m.StorylinePanel),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="mt-8 h-[60vh] flex items-center justify-center bg-gray-100 rounded-lg">
-        Loading storylines...
-      </div>
-    ),
-  }
-);
+import { BookOpen, ArrowRight } from 'lucide-react';
 
 const MarkdownPanel = dynamic(
   () => import('@/components/dashboard/MarkdownPanel').then((m) => m.MarkdownPanel),
   { ssr: false }
 );
 
-interface StoryData {
-  slug: string;
-  name: string;
-  description: string;
-  hazard: string;
-  mdxSource: MDXRemoteSerializeResult;
-}
-
-interface Props {
-  stories: StoryData[];
-}
-
 const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-export function DashboardShell({ stories }: Props) {
+export function DashboardShell() {
   const {
     hazard,
     stage,
@@ -212,10 +189,34 @@ export function DashboardShell({ stories }: Props) {
             <MarkdownPanel />
           </div>
         )}
+        {/* Storyline CTA */}
+        <div className="mt-8 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-800 border border-gray-700/60 p-8 shadow-lg">
+          <div className="flex items-start justify-between gap-6 flex-wrap">
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <BookOpen className="h-5 w-5 text-blue-400" />
+                <p className="text-xs font-medium uppercase tracking-wider text-gray-400">
+                  Disaster Storylines
+                </p>
+              </div>
+              <h3 className="text-xl font-bold text-white">
+                Explore East Africa {hazard === 'drought' ? 'Drought' : 'Flood'} Storylines
+              </h3>
+              <p className="mt-2 text-sm text-gray-400 max-w-lg">
+                Scroll-driven narratives with satellite imagery mapping country-by-country
+                impacts across the Greater Horn of Africa.
+              </p>
+            </div>
+            <Link
+              href="/storylines"
+              className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition-colors shadow-lg"
+            >
+              View Storylines
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+          </div>
+        </div>
       </div>
-
-      {/* Storyline — scroll-driven map */}
-      <StorylinePanel stories={stories} hazard={hazard} />
     </>
   );
 }

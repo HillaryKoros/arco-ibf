@@ -4,29 +4,8 @@ import { createContext, useContext, useEffect, useRef, useState, useCallback, ty
 import { useInView } from "react-intersection-observer";
 import { motion } from "framer-motion";
 import maplibregl from "maplibre-gl";
+import { feature } from "topojson-client";
 import { Layers } from "lucide-react";
-import { vectorTileUrl, getCountryBbox } from "@/lib/geo-api";
-
-/** Compute bounding box from a GeoJSON geometry */
-function getBbox(geom: GeoJSON.Geometry): [number, number, number, number] | null {
-  const coords: number[][] = [];
-  function extract(c: any) {
-    if (typeof c[0] === "number") { coords.push(c); return; }
-    for (const sub of c) extract(sub);
-  }
-  try {
-    extract((geom as any).coordinates);
-    if (coords.length === 0) return null;
-    let [minX, minY, maxX, maxY] = [Infinity, Infinity, -Infinity, -Infinity];
-    for (const [x, y] of coords) {
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-    }
-    return [minX, minY, maxX, maxY];
-  } catch { return null; }
-}
 
 export type SeverityLevel = "extreme" | "severe" | "high" | "moderate";
 
@@ -35,7 +14,7 @@ export interface ChapterData {
   zoom: number;
   severity?: SeverityLevel;
   markerLabel?: string;
-  iso3?: string; // Country code — used to highlight boundary from TiPG
+  iso3?: string;
 }
 
 const SEVERITY_COLORS: Record<SeverityLevel, string> = {
@@ -52,58 +31,55 @@ const BASEMAPS: Record<string, { name: string; tiles: string[] }> = {
   osm: { name: "OSM", tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"] },
 };
 
-function makeStyle(basemap: string) {
+function makeBaseStyle(basemap: string) {
   const bm = BASEMAPS[basemap] || BASEMAPS.satellite;
   return {
     version: 8 as const,
     sources: {
       base: { type: "raster" as const, tiles: bm.tiles, tileSize: 256 },
-      // TiPG admin boundaries — country level
-      "admin0-tipg": {
-        type: "vector" as const,
-        tiles: [vectorTileUrl("admin0_boundaries")],
-        minzoom: 0,
-        maxzoom: 12,
-      },
-      // TiPG admin boundaries — province level (shown at higher zoom)
-      "admin1-tipg": {
-        type: "vector" as const,
-        tiles: [vectorTileUrl("admin1_boundaries")],
-        minzoom: 4,
-        maxzoom: 14,
-      },
     },
     layers: [
       { id: "base", type: "raster" as const, source: "base" },
-      // Country boundaries — always visible
-      {
-        id: "admin0-fill",
-        type: "fill" as const,
-        source: "admin0-tipg",
-        "source-layer": "default",
-        paint: { "fill-color": "#ffffff", "fill-opacity": 0.05 },
-      },
-      {
-        id: "admin0-border",
-        type: "line" as const,
-        source: "admin0-tipg",
-        "source-layer": "default",
-        paint: { "line-color": "#ffffff", "line-width": 1.5, "line-opacity": 0.6 },
-      },
-      // Province boundaries — visible when zoomed in
-      {
-        id: "admin1-border",
-        type: "line" as const,
-        source: "admin1-tipg",
-        "source-layer": "default",
-        minzoom: 5,
-        paint: { "line-color": "#ffffff", "line-width": 0.8, "line-opacity": 0.4, "line-dasharray": [2, 2] },
-      },
     ],
   };
 }
 
-// ── StoryMap (MapLibre) ──
+// Country name → ISO3
+const COUNTRY_ISO3: Record<string, string> = {
+  "Burundi": "BDI", "Djibouti": "DJI", "Eritrea": "ERI",
+  "Ethiopia": "ETH", "Kenya": "KEN", "Rwanda": "RWA",
+  "Somalia": "SOM", "South Sudan": "SSD", "Sudan": "SDN",
+  "Tanzania": "TZA", "Uganda": "UGA",
+};
+
+// Extract ISO3 from GID_1 (e.g. "ETH.5_1" → "ETH")
+function gidToIso(gid: string): string {
+  return gid.split(".")[0];
+}
+
+// Compute bbox from GeoJSON features filtered by ISO3
+function bboxForCountry(features: GeoJSON.Feature[], iso3: string): [number, number, number, number] | null {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let found = false;
+  for (const f of features) {
+    if (gidToIso((f.properties as Record<string, string>)?.GID_1 || "") !== iso3) continue;
+    found = true;
+    const extract = (c: unknown) => {
+      if (Array.isArray(c) && typeof c[0] === "number") {
+        if (c[0] < minX) minX = c[0];
+        if (c[1] < minY) minY = c[1];
+        if (c[0] > maxX) maxX = c[0];
+        if (c[1] > maxY) maxY = c[1];
+        return;
+      }
+      if (Array.isArray(c)) for (const s of c) extract(s);
+    };
+    extract((f.geometry as GeoJSON.Polygon).coordinates);
+  }
+  return found ? [minX, minY, maxX, maxY] : null;
+}
+
+// ── StoryMap ──
 
 interface StoryMapProps {
   center: [number, number];
@@ -112,106 +88,183 @@ interface StoryMapProps {
   markerLabel?: string;
   severity?: SeverityLevel;
   interactive?: boolean;
-  iso3?: string; // Country code — clip map to this country
+  iso3?: string;
 }
 
 export function StoryMap({ center, zoom, className = "", markerLabel, severity = "high", interactive = false, iso3 }: StoryMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const markerRef = useRef<maplibregl.Marker | null>(null);
+  const adminLoadedRef = useRef(false);
+  const featuresRef = useRef<GeoJSON.Feature[]>([]);
   const [activeBasemap, setActiveBasemap] = useState("satellite");
   const [showPicker, setShowPicker] = useState(false);
 
-  // Stable primitives for dependency tracking
   const lat = center[0];
   const lng = center[1];
 
-  // Init map
+  // Init map + load admin1 GeoJSON
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
-    mapRef.current = new maplibregl.Map({
+
+    const map = new maplibregl.Map({
       container: containerRef.current,
-      style: makeStyle(activeBasemap),
-      center: [lng, lat], // maplibre is [lng, lat]
+      style: makeBaseStyle(activeBasemap),
+      center: [lng, lat],
       zoom,
       interactive,
     });
-    return () => { mapRef.current?.remove(); mapRef.current = null; };
-  }, []);
+    mapRef.current = map;
 
-  // Fly to country + clip when chapter changes
+    map.on("load", async () => {
+      try {
+        const res = await fetch("/data/icpac_adm1v3.json");
+        const topo = await res.json();
+        const objKey = Object.keys(topo.objects)[0];
+        const geojson = feature(topo, topo.objects[objKey]) as unknown as GeoJSON.FeatureCollection;
+        featuresRef.current = geojson.features;
+
+        map.addSource("admin1", { type: "geojson", data: geojson });
+
+        // Fill — highlighted country
+        map.addLayer({
+          id: "admin1-fill",
+          type: "fill",
+          source: "admin1",
+          paint: {
+            "fill-color": "#ffffff",
+            "fill-opacity": 0.08,
+          },
+        });
+
+        // Border — all regions
+        map.addLayer({
+          id: "admin1-border",
+          type: "line",
+          source: "admin1",
+          paint: {
+            "line-color": "#ffffff",
+            "line-width": 0.6,
+            "line-opacity": 0.3,
+          },
+        });
+
+        // Active country highlight border
+        map.addLayer({
+          id: "admin1-highlight-border",
+          type: "line",
+          source: "admin1",
+          paint: {
+            "line-color": "#ffffff",
+            "line-width": 2,
+            "line-opacity": 0.8,
+          },
+          filter: ["==", "GID_1", ""],
+        });
+
+        adminLoadedRef.current = true;
+      } catch (err) {
+        console.error("Failed to load admin1 boundaries", err);
+      }
+    });
+
+    return () => { map.remove(); mapRef.current = null; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Update map when chapter changes — highlight country, fit bounds
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    // Highlight active country — dim others
-    if (iso3 && map.getLayer("admin0-fill")) {
-      const color = SEVERITY_COLORS[severity];
-      map.setFilter("admin0-fill", null); // show all
-      map.setPaintProperty("admin0-fill", "fill-color", [
-        "case",
-        ["==", ["get", "iso3"], iso3], `${color}33`,
-        "rgba(0,0,0,0.5)" // dim non-active countries
-      ]);
-      map.setPaintProperty("admin0-fill", "fill-opacity", 0.6);
-      map.setPaintProperty("admin0-border", "line-color", [
-        "case",
-        ["==", ["get", "iso3"], iso3], color,
-        "rgba(255,255,255,0.3)"
-      ]);
-      map.setPaintProperty("admin0-border", "line-width", [
-        "case",
-        ["==", ["get", "iso3"], iso3], 2.5,
-        0.8
-      ]);
-    }
-
-    // Fetch country bbox from TiPG SQL function and fitBounds
-    if (iso3) {
-      getCountryBbox(iso3)
-        .then(bbox => {
-          if (bbox) {
-            map.fitBounds(
-              [[bbox.minx, bbox.miny], [bbox.maxx, bbox.maxy]],
-              { padding: 40, duration: 1800, maxZoom: zoom }
-            );
-          } else {
-            map.flyTo({ center: [lng, lat], zoom, duration: 1800 });
-          }
-        })
-        .catch(() => {
-          map.flyTo({ center: [lng, lat], zoom, duration: 1800 });
-        });
-    } else {
-      map.flyTo({ center: [lng, lat], zoom, duration: 1800 });
-    }
-
-    // Update marker
-    if (markerRef.current) { markerRef.current.remove(); markerRef.current = null; }
     const color = SEVERITY_COLORS[severity];
-    const el = document.createElement("div");
-    el.style.cssText = `width:24px;height:24px;border-radius:50%;background:${color}55;border:2px solid ${color};`;
-    markerRef.current = new maplibregl.Marker({ element: el })
-      .setLngLat([lng, lat])
-      .addTo(map);
-    if (markerLabel) {
-      markerRef.current.setPopup(
-        new maplibregl.Popup({ closeButton: false, offset: 15 }).setText(markerLabel)
-      ).togglePopup();
+
+    const applyHighlight = () => {
+      if (!adminLoadedRef.current || !map.getLayer("admin1-fill")) return;
+
+      if (iso3) {
+        // Highlight active country's admin1 regions
+        map.setPaintProperty("admin1-fill", "fill-color", [
+          "case",
+          ["==", ["slice", ["get", "GID_1"], 0, 3], iso3], `${color}55`,
+          "rgba(0,0,0,0.4)",
+        ]);
+        map.setPaintProperty("admin1-fill", "fill-opacity", 0.7);
+
+        // Highlight border for active country
+        map.setFilter("admin1-highlight-border", [
+          "==", ["slice", ["get", "GID_1"], 0, 3], iso3,
+        ]);
+        map.setPaintProperty("admin1-highlight-border", "line-color", color);
+
+        // Dim other borders
+        map.setPaintProperty("admin1-border", "line-color", [
+          "case",
+          ["==", ["slice", ["get", "GID_1"], 0, 3], iso3], color,
+          "rgba(255,255,255,0.2)",
+        ]);
+
+        // Fit to country bbox from geometry
+        const bbox = bboxForCountry(featuresRef.current, iso3);
+        if (bbox) {
+          map.fitBounds(
+            [[bbox[0], bbox[1]], [bbox[2], bbox[3]]],
+            { padding: 60, duration: 2000, maxZoom: zoom, essential: true }
+          );
+        } else {
+          map.easeTo({ center: [lng, lat], zoom, duration: 2000, essential: true });
+        }
+      } else {
+        // Reset to default
+        map.setPaintProperty("admin1-fill", "fill-color", "#ffffff");
+        map.setPaintProperty("admin1-fill", "fill-opacity", 0.08);
+        map.setFilter("admin1-highlight-border", ["==", "GID_1", ""]);
+        map.setPaintProperty("admin1-border", "line-color", "#ffffff");
+        map.easeTo({ center: [lng, lat], zoom, duration: 2000, essential: true });
+      }
+    };
+
+    // Apply immediately if loaded, or wait for load
+    if (adminLoadedRef.current) {
+      applyHighlight();
+    } else {
+      map.once("load", applyHighlight);
     }
   }, [lat, lng, zoom, severity, markerLabel, iso3]);
 
-  // Switch basemap
+  // Switch basemap — preserve admin layers
   const switchBasemap = useCallback((key: string) => {
-    if (!mapRef.current || key === activeBasemap) return;
-    mapRef.current.setStyle(makeStyle(key));
+    const map = mapRef.current;
+    if (!map || key === activeBasemap) return;
+
+    // Save current source data
+    const adminSource = map.getSource("admin1");
+    const adminData = adminSource && "serialize" in adminSource ? (adminSource as maplibregl.GeoJSONSource).serialize() : null;
+
+    map.setStyle(makeBaseStyle(key));
     setActiveBasemap(key);
     setShowPicker(false);
+
+    // Re-add admin layers after style change
+    map.once("styledata", () => {
+      if (adminData && featuresRef.current.length > 0) {
+        const geojson: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: featuresRef.current };
+        map.addSource("admin1", { type: "geojson", data: geojson });
+        map.addLayer({ id: "admin1-fill", type: "fill", source: "admin1", paint: { "fill-color": "#ffffff", "fill-opacity": 0.08 } });
+        map.addLayer({ id: "admin1-border", type: "line", source: "admin1", paint: { "line-color": "#ffffff", "line-width": 0.6, "line-opacity": 0.3 } });
+        map.addLayer({ id: "admin1-highlight-border", type: "line", source: "admin1", paint: { "line-color": "#ffffff", "line-width": 2, "line-opacity": 0.8 }, filter: ["==", "GID_1", ""] });
+        adminLoadedRef.current = true;
+      }
+    });
   }, [activeBasemap]);
 
   return (
     <div className={`relative ${className}`}>
       <div ref={containerRef} className="absolute inset-0" />
+      {/* Country label */}
+      {markerLabel && (
+        <div className="absolute top-4 left-4 z-10 bg-black/60 backdrop-blur px-3 py-1.5 rounded-md">
+          <span className="text-white text-sm font-bold">{markerLabel}</span>
+        </div>
+      )}
       {/* Basemap switcher */}
       <div className="absolute top-3 right-3 z-10">
         <button onClick={() => setShowPicker((v) => !v)} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-black/70 backdrop-blur rounded-md text-xs text-gray-300 hover:bg-black/80">
@@ -245,14 +298,6 @@ interface StorylineProps {
   defaultZoom?: number;
 }
 
-// Country name → ISO3 lookup for TiPG boundary queries
-const COUNTRY_ISO3: Record<string, string> = {
-  "Burundi": "BDI", "Djibouti": "DJI", "Eritrea": "ERI",
-  "Ethiopia": "ETH", "Kenya": "KEN", "Rwanda": "RWA",
-  "Somalia": "SOM", "South Sudan": "SSD", "Sudan": "SDN",
-  "Tanzania": "TZA", "Uganda": "UGA",
-};
-
 export function Storyline({ children, defaultCenter = [5, 35], defaultZoom = 4 }: StorylineProps) {
   const [activeChapter, setActiveChapter] = useState<ChapterData | null>(null);
 
@@ -274,7 +319,7 @@ export function Storyline({ children, defaultCenter = [5, 35], defaultZoom = 4 }
             iso3={activeIso3}
           />
         </div>
-        {/* Scrolling chapter overlay — pulled up over the map */}
+        {/* Scrolling chapter overlay */}
         <div className="relative z-10 pointer-events-none" style={{ marginTop: "calc(-100vh + 3.5rem)" }}>
           {children}
         </div>
@@ -287,30 +332,25 @@ export function Storyline({ children, defaultCenter = [5, 35], defaultZoom = 4 }
 
 interface ChapterProps {
   children: ReactNode;
-  center: string | [number, number]; // MDX passes "lat,lng" string
+  center: string | [number, number];
   zoom: string | number;
   severity?: SeverityLevel;
   markerLabel?: string;
   side?: "left" | "right";
 }
 
-// Parse center from either "lat,lng" string or [lat,lng] array
 function parseCenter(center: string | [number, number]): [number, number] {
   if (typeof center === "string") {
     const parts = center.split(",").map(Number);
-    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-      return [parts[0], parts[1]];
-    }
+    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) return [parts[0], parts[1]];
   }
-  if (Array.isArray(center)) {
-    return [Number(center[0]), Number(center[1])];
-  }
-  return [0, 35]; // fallback: East Africa
+  if (Array.isArray(center)) return [Number(center[0]), Number(center[1])];
+  return [0, 35];
 }
 
 export function Chapter({ children, center, zoom, severity = "high", markerLabel, side = "left" }: ChapterProps) {
   const { setActiveChapter } = useContext(StorylineContext);
-  const { ref, inView } = useInView({ threshold: 0.3, triggerOnce: false });
+  const { ref, inView } = useInView({ threshold: 0.4, triggerOnce: false });
 
   const parsedCenter = parseCenter(center);
   const parsedZoom = Number(zoom) || 5;
@@ -319,16 +359,16 @@ export function Chapter({ children, center, zoom, severity = "high", markerLabel
     if (inView) {
       setActiveChapter({ center: parsedCenter, zoom: parsedZoom, severity, markerLabel });
     }
-  }, [inView, parsedCenter[0], parsedCenter[1], parsedZoom, severity, markerLabel]);
+  }, [inView, parsedCenter[0], parsedCenter[1], parsedZoom, severity, markerLabel]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isRight = side === "right";
 
   return (
-    <div ref={ref} className={`min-h-[80vh] flex items-center py-16 px-4 md:px-8 ${isRight ? "lg:justify-end" : "lg:justify-start"}`}>
+    <div ref={ref} className={`min-h-screen flex items-center py-16 px-4 md:px-8 ${isRight ? "lg:justify-end" : "lg:justify-start"}`} style={{ scrollSnapAlign: "start" }}>
       <motion.div
-        initial={{ opacity: 0, x: isRight ? 40 : -40 }}
-        animate={{ opacity: inView ? 1 : 0.15, x: inView ? 0 : (isRight ? 40 : -40) }}
-        transition={{ duration: 0.7, ease: "easeOut" }}
+        initial={{ opacity: 0, y: 30 }}
+        animate={{ opacity: inView ? 1 : 0.1, y: inView ? 0 : 30 }}
+        transition={{ duration: 1.0, ease: [0.25, 0.1, 0.25, 1.0] }}
         className="w-full lg:w-[420px] xl:w-[460px] pointer-events-auto"
       >
         <div className="bg-slate-900/85 backdrop-blur-lg border border-gray-700/50 rounded-lg p-6 md:p-8 shadow-2xl prose prose-invert prose-sm max-w-none">

@@ -12,6 +12,7 @@ const nextConfig = {
     const dataApi = process.env.DATA_API_URL || "http://localhost:8000";
     return [
       { source: "/api/emdat-monthly-risk", destination: `${dataApi}/api/emdat-monthly-risk` },
+      { source: "/api/emdat-all-regions", destination: `${dataApi}/api/emdat-all-regions` },
       { source: "/api/emdat-month-regions/:path*", destination: `${dataApi}/api/emdat-month-regions/:path*` },
       { source: "/api/emdat-event-markdown/:path*", destination: `${dataApi}/api/emdat-event-markdown/:path*` },
       { source: "/api/:path*", destination: `${process.env.CMS_API_URL || "http://localhost:9201"}/api/:path*` },

@@ -140,6 +140,37 @@ async def emdat_month_regions(event_key: str):
 
 
 # ---------------------------------------------------------------------------
+# Endpoint 2b: All-time admin1 aggregation (for "All" choropleth view)
+# ---------------------------------------------------------------------------
+@app.get("/api/emdat-all-regions")
+async def emdat_all_regions(type: str = Query(..., alias="type")):
+    df = _get_df(type)
+
+    regions = []
+    for admin1_code, grp in df.groupby("admin1_code"):
+        events = grp.groupby("Dis No").agg(
+            year=("Start Year", "first"),
+            deaths=("Total Deaths", "first"),
+            affected=("Total Affected", "first"),
+        ).reset_index()
+
+        first = grp.iloc[0]
+        regions.append(
+            {
+                "shapeID": admin1_code,
+                "shapeName": str(admin1_code).split(".")[-1] if "." in str(admin1_code) else str(admin1_code),
+                "shapeGroup": str(first.get("Country", "")),
+                "frequency": len(events),
+                "total_deaths": _safe(events["deaths"].sum()),
+                "total_affected": _safe(events["affected"].sum()),
+                "event_count": len(events),
+            }
+        )
+
+    return {"regions": regions}
+
+
+# ---------------------------------------------------------------------------
 # Endpoint 3: auto-generated event markdown
 # ---------------------------------------------------------------------------
 @app.get("/api/emdat-event-markdown/{event_key:path}")

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { PipelineChips } from '@/components/dashboard/PipelineChips';
@@ -12,7 +12,7 @@ import { fetchEmdatMonthlyRisk } from '@/lib/api/emdat';
 import { usePipelineStore } from '@/store/pipeline-context';
 import { getCalendarConfig } from '@/types/pipeline';
 import type { EmdatMonthDatum } from '@/types/emdat';
-import { BookOpen, ArrowRight } from 'lucide-react';
+import { BookOpen, ArrowRight, Globe } from 'lucide-react';
 
 const MarkdownPanel = dynamic(
   () => import('@/components/dashboard/MarkdownPanel').then((m) => m.MarkdownPanel),
@@ -34,14 +34,16 @@ export function DashboardShell() {
   const calendarConfig = getCalendarConfig(stage, hazard);
   const isRK = stage === 'risk-knowledge';
 
+  const [showAllMap, setShowAllMap] = useState(false);
   const [calendarData, setCalendarData] = useState<EmdatMonthDatum[]>([]);
   const [selectedCell, setSelectedCell] = useState<string | null>(null);
   const [timeLabel, setTimeLabel] = useState<string | null>(null);
 
-  // Fetch calendar data: RK from parquet API, RM/RD synthetic
+  // Fetch calendar data
   useEffect(() => {
     setSelectedCell(null);
     setTimeLabel(null);
+    setShowAllMap(false);
 
     if (isRK) {
       fetchEmdatMonthlyRisk(hazard)
@@ -50,11 +52,6 @@ export function DashboardShell() {
             (d) => d.year >= calendarConfig.startYear && d.year <= calendarConfig.endYear
           );
           setCalendarData(filtered);
-          if (filtered.length > 0) {
-            const first = filtered[0];
-            setSelectedMonth(`${first.year}-${String(first.month).padStart(2, '0')}`);
-            setSelectedEventKey(first.event_key);
-          }
         })
         .catch((err) => console.error('Failed to fetch calendar data', err));
     } else {
@@ -82,7 +79,6 @@ export function DashboardShell() {
         setSelectedMonth(null);
         return;
       }
-
       const cellKey = `${sel.year}-${String(sel.month).padStart(2, '0')}`;
       const urlKey = sel.dateKey || cellKey;
       setSelectedCell(cellKey);
@@ -106,7 +102,7 @@ export function DashboardShell() {
           </p>
         </div>
 
-        {/* Hazard Chips (large, with descriptions) */}
+        {/* Hazard Chips */}
         <div className="grid grid-cols-2 gap-3 max-w-2xl">
           {([
             { id: 'drought' as const, label: 'Drought', desc: 'Monthly BN outlook + EM-DAT events' },
@@ -168,27 +164,46 @@ export function DashboardShell() {
               startYear={calendarConfig.startYear}
               endYear={calendarConfig.endYear}
               selectedCell={selectedCell}
-              onSelectCell={onCellSelect}
+              onSelectCell={(sel) => {
+                setShowAllMap(false);
+                onCellSelect(sel);
+              }}
               colorScheme={hazard}
               mode={calendarConfig.mode}
               synthetic={!isRK}
             />
           </div>
 
-          {/* D3 Choropleth Map */}
+          {/* Choropleth Map */}
           <div className="rounded-xl bg-white p-4 shadow-sm border border-gray-100">
-            <p className="text-xs font-medium uppercase tracking-wider text-gray-400">Affected Regions</p>
-            <h3 className="text-sm font-semibold text-gray-700 mb-3">Admin1 Frequency Choropleth</h3>
-            <DisasterMap />
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wider text-gray-400">Affected Regions</p>
+                <h3 className="text-sm font-semibold text-gray-700">Admin1 Frequency Choropleth</h3>
+              </div>
+              <button
+                onClick={() => setShowAllMap(!showAllMap)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  showAllMap
+                    ? 'bg-slate-800 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                <Globe className="h-3.5 w-3.5" />
+                {showAllMap ? 'All Events' : 'All Events'}
+              </button>
+            </div>
+            <DisasterMap mode={showAllMap ? 'all' : pipelineMonth ? 'event' : 'empty'} />
           </div>
         </div>
 
-        {/* MDX Event Detail Panel */}
-        {pipelineMonth && (
+        {/* MDX Event Detail Panel — only in monthly mode */}
+        {!showAllMap && pipelineMonth && (
           <div className="mt-6">
             <MarkdownPanel />
           </div>
         )}
+
         {/* Storyline CTA */}
         <div className="mt-8 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-800 border border-gray-700/60 p-8 shadow-lg">
           <div className="flex items-start justify-between gap-6 flex-wrap">

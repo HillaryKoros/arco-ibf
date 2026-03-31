@@ -23,3 +23,12 @@ export async function fetchEmdatMonthRegions(
   );
   return payload.regions ?? [];
 }
+
+export async function fetchEmdatAllRegions(
+  disasterType: string,
+): Promise<EmdatRegionDatum[]> {
+  const payload = await request<{ regions?: EmdatRegionDatum[] }>(
+    `/api/emdat-all-regions?type=${disasterType}`,
+  );
+  return payload.regions ?? [];
+}
